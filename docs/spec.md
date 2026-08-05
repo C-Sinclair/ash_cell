@@ -101,15 +101,41 @@ demand is documented, and it's a better first contribution to be known for than 
 
 ### 4.1 Mechanism
 
-**Do not use `put_dynamic_repo/1`.** Resolve the tenant's repo pid and inject it via
-`Ash.Query.set_context(%{data_layer: %{repo: pid}})` / the changeset equivalent, applied
-from a resource-level `prepare`/`change` or a thin Spark extension reading `query.tenant`.
-`Ash.ToTenant` is the protocol for turning a rich tenant value into the term the data layer
-sees.
+**Settled by probe** (`test/probe_test.exs`, 6 tests green). Rev 2 of this spec had this
+backwards; the correction stands.
 
-This means AshCell is plausibly **an extension plus a runtime**, not a data layer
-reimplementation. Confirming that in the first two days is the highest-value thing in
-Stage 1.
+Bind a tenant with **`Ecto.Repo.put_dynamic_repo/1`**, pointing the calling process at that
+tenant's repo instance:
+
+```elixir
+{:ok, pid} = TestRepo.start_link(name: nil, database: tenant_path, pool_size: 1)
+TestRepo.put_dynamic_repo(pid)
+```
+
+The query-context override (`%{data_layer: %{repo: ...}}`) is real and AshSqlite does consult
+it before the DSL-declared repo (`lib/data_layer.ex:2131`), but it can only carry a repo
+**module**: both the read path (`repo.all/2`, line 609) and the write path
+(`repo.insert_all/3`, via `AshSql.dynamic_repo/3`) call the resolved value as a module, so a
+pid raises `ArgumentError`. Its real purpose is selecting between modules — primary versus
+read replica — not between instances.
+
+**What the probe proved:**
+
+| Claim | Result |
+|---|---|
+| Reads and writes route to the bound tenant | yes |
+| Separation is physical — verified by reading each file directly, bypassing Ash | yes |
+| 500 writes stay in one database | yes |
+| Context override carrying a pid | raises `ArgumentError` |
+| Context override carrying a module, composed with the process binding | works |
+| Binding survives `Task.async` | **no** — must be re-established inside the task |
+
+**Consequence.** AshCell is still an extension plus a runtime rather than a data layer
+reimplementation, so the shape of the plan holds and the Stage 1 estimate stands. But the
+binding is *ambient*, which promotes process boundaries from footnote to first-class hazard:
+`Task.async`, `Ash.load` fan-out, and every background job start unbound.
+`AshCell.with_tenant/2` is the single sanctioned entry point, it must bind explicitly every
+time, and nothing may rely on an inherited binding.
 
 ### 4.2 Modules
 
