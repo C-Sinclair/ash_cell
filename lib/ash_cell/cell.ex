@@ -16,7 +16,7 @@ defmodule AshCell.Cell do
 
   require Logger
 
-  defstruct [:tenant, :repo, :repo_pid, :path, :opened_at, queries: 0]
+  defstruct [:tenant, :repo, :repo_pid, :path, :opened_at, :schema_version, queries: 0]
 
   def start_link(opts) do
     tenant = Keyword.fetch!(opts, :tenant)
@@ -48,13 +48,14 @@ defmodule AshCell.Cell do
       |> maybe_put_key(key)
 
     with {:ok, repo_pid} <- repo.start_link(repo_opts),
-         :ok <- migrate(repo, repo_pid, migrator) do
+         {:ok, version} <- migrate(repo, repo_pid, migrator) do
       {:ok,
        %__MODULE__{
          tenant: tenant,
          repo: repo,
          repo_pid: repo_pid,
          path: path,
+         schema_version: version,
          opened_at: System.monotonic_time(:millisecond)
        }}
     else
@@ -66,20 +67,19 @@ defmodule AshCell.Cell do
   defp maybe_put_key(opts, key), do: Keyword.put(opts, :key, key)
 
   # Migration runs before the cell is available, so a tenant is never served
-  # against a half-migrated schema. A failure here stops the cell rather than
-  # letting it answer queries.
-  defp migrate(_repo, _repo_pid, nil), do: :ok
-
+  # against a half-migrated schema. A failure stops the cell rather than letting
+  # it answer queries: being down is recoverable, serving an unknown schema is not.
   defp migrate(repo, repo_pid, migrator) do
     previous = repo.get_dynamic_repo()
     repo.put_dynamic_repo(repo_pid)
 
     try do
-      migrator.(repo_pid)
-      :ok
+      AshCell.Migrator.apply_to(repo_pid, AshCell.Migrator.normalise(migrator))
     rescue
       e ->
-        Logger.error("cell migration failed: #{Exception.message(e)}")
+        # Deliberately no tenant data in the message; a migration failure is
+        # about schema, and the tenant id is enough to find the cell.
+        Logger.error("cell migration raised: #{inspect(e.__struct__)}")
         {:error, {:migration_failed, e.__struct__}}
     after
       repo.put_dynamic_repo(previous)
@@ -95,6 +95,7 @@ defmodule AshCell.Cell do
        tenant: state.tenant,
        path: state.path,
        queries: state.queries,
+       schema_version: state.schema_version,
        bytes: file_size(state.path),
        resident_ms: System.monotonic_time(:millisecond) - state.opened_at
      }, state}

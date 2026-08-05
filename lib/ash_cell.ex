@@ -6,75 +6,129 @@ defmodule AshCell do
   own key, owned by one process, with compute routed to the data rather than the
   reverse.
 
-  ## Using it
+  ## The handle is the tenant id, not a pid
 
-      children = [
-        {AshCell, repo: MyApp.Repo, dir: "priv/cells", migrator: &MyApp.Migrations.run/1}
-      ]
+  Ecto binds a repo *instance* per process, and `c:Ecto.Repo.put_dynamic_repo/1`
+  accepts only an atom or a pid — via-tuples are rejected by its guard, and
+  `Ecto.Repo.Registry.lookup/1` resolves an atom through `GenServer.whereis/1`.
+  Neither is a good handle to pass around:
+
+    * a **pid** is unstable across cell restarts and cannot be serialised into a
+      job payload
+    * an **atom name** is stable and serialisable, but atoms are never garbage
+      collected, so minting one per tenant leaks the atom table
+
+  So the portable handle is the **tenant id itself**. `AshCell.Registry` resolves
+  it to a live cell, starting one if needed, and the pid never leaves `bind/1`.
+  That is what makes this work from any context — a controller, a LiveView, a
+  `Task`, or an Oban job on a different node — with nothing inherited.
 
       AshCell.with_tenant("acme", fn ->
         MyApp.Patient |> Ash.read!(tenant: "acme")
       end)
 
-  ## Why `with_tenant/2` and not an option on the query
+  ## Binding is ambient, so bind explicitly
 
-  Ecto binds a repo *instance* per process, and both AshSqlite's read path
-  (`repo.all/2`) and its write path (`repo.insert_all/3`) call the resolved repo as
-  a module. So the tenant cannot travel on the query struct; it has to be
-  established in the process that will run the query.
-
-  That makes the binding ambient, which is a hazard worth naming: it does **not**
-  survive `Task.async`, `Ash.load` fan-out, or a background job. Anything that
-  crosses a process boundary must call `with_tenant/2` again on the other side.
-  Nothing should ever rely on inheriting a binding.
+  Because Ecto's binding lives in the process dictionary, it does **not** survive
+  `Task.async`, `Ash.load` fan-out, or a job boundary. Every entry point must bind
+  for itself. Nothing should ever rely on inheriting a binding, and
+  `assert_bound!/0` exists to make that a loud failure rather than a quiet one.
   """
+
+  @tenant_key {__MODULE__, :bound_tenant}
 
   @doc false
   def child_spec(opts) do
-    %{
-      id: __MODULE__,
-      type: :supervisor,
-      start: {AshCell.Supervisor, :start_link, [opts]}
-    }
+    %{id: __MODULE__, type: :supervisor, start: {AshCell.Supervisor, :start_link, [opts]}}
   end
+
+  @doc """
+  Binds the calling process to `tenant`'s database, starting the cell if needed.
+
+  Returns the previous binding so it can be restored. Prefer `with_tenant/2`
+  unless you genuinely need to hold a binding across calls — for example inside a
+  GenServer that only ever serves one tenant.
+  """
+  @spec bind(term()) :: {:ok, term()} | {:error, term()}
+  def bind(tenant) do
+    with {:ok, cell} <- AshCell.Manager.ensure_started(tenant) do
+      repo = repo()
+      previous = {repo.get_dynamic_repo(), Process.get(@tenant_key)}
+
+      repo.put_dynamic_repo(AshCell.Cell.repo_pid(cell))
+      Process.put(@tenant_key, tenant)
+      AshCell.Cell.note_query(cell)
+
+      {:ok, previous}
+    end
+  end
+
+  @doc "Restores a binding returned by `bind/1`."
+  @spec restore({term(), term()}) :: :ok
+  def restore({dynamic_repo, tenant}) do
+    repo().put_dynamic_repo(dynamic_repo)
+
+    case tenant do
+      nil -> Process.delete(@tenant_key)
+      other -> Process.put(@tenant_key, other)
+    end
+
+    :ok
+  end
+
+  @doc "Clears any tenant binding on this process."
+  @spec unbind() :: :ok
+  def unbind, do: restore({repo(), nil})
 
   @doc """
   Runs `fun` with the process bound to `tenant`'s database.
 
-  Starts the cell if it is not resident. Restores the previous binding afterwards,
-  so nesting and re-entry are safe.
+  Restores the previous binding afterwards, so nesting and re-entry are safe.
   """
   @spec with_tenant(term(), (-> result)) :: result when result: var
   def with_tenant(tenant, fun) when is_function(fun, 0) do
-    {:ok, cell} = AshCell.Manager.ensure_started(tenant)
-    repo = repo()
-    repo_pid = AshCell.Cell.repo_pid(cell)
-
-    previous = repo.get_dynamic_repo()
-    repo.put_dynamic_repo(repo_pid)
-    AshCell.Cell.note_query(cell)
+    {:ok, previous} = bind(tenant)
 
     try do
       fun.()
     after
-      repo.put_dynamic_repo(previous)
+      restore(previous)
     end
   end
 
-  @doc "The tenant currently bound to this process, or `nil`."
-  def current_tenant do
-    bound = repo().get_dynamic_repo()
+  @doc """
+  The tenant bound to this process, or `nil`.
 
-    Enum.find(AshCell.Registry.resident_tenants(), fn tenant ->
-      match?({:ok, pid} when pid != nil, AshCell.Registry.lookup(tenant)) and
-        cell_repo_pid(tenant) == bound
-    end)
-  end
+  Read from the process dictionary rather than derived by searching the registry
+  for a matching pid, so it stays correct when a cell restarts and gets a new pid.
+  """
+  @spec bound_tenant() :: term() | nil
+  def bound_tenant, do: Process.get(@tenant_key)
 
-  defp cell_repo_pid(tenant) do
-    case AshCell.Registry.lookup(tenant) do
-      {:ok, pid} -> AshCell.Cell.repo_pid(pid)
-      :error -> nil
+  @doc """
+  Raises unless this process is bound to a tenant.
+
+  Use at the top of anything that will run tenanted queries but did not itself
+  establish the binding — a background job, a spawned task, a consumer. Without
+  it, an unbound query fails deep inside Ecto with a message about the repo not
+  being started, which is technically fail-closed but tells you nothing about why.
+  """
+  @spec assert_bound!() :: term()
+  def assert_bound! do
+    case bound_tenant() do
+      nil ->
+        raise ArgumentError, """
+        no AshCell tenant is bound to this process.
+
+        The binding lives in the process dictionary and does not cross process
+        boundaries, so a Task, an Oban job, or a spawned consumer starts unbound.
+        Wrap the work:
+
+            AshCell.with_tenant(tenant_id, fn -> ... end)
+        """
+
+      tenant ->
+        tenant
     end
   end
 
@@ -115,5 +169,6 @@ defmodule AshCell do
     end
   end
 
-  defp repo, do: AshCell.Manager.config().repo
+  @doc false
+  def repo, do: AshCell.Manager.config().repo
 end

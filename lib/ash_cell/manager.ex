@@ -14,7 +14,7 @@ defmodule AshCell.Manager do
 
   @default_max_resident 256
 
-  defstruct [:repo, :dir, :key_for, :migrator, :max_resident, lru: %{}]
+  defstruct [:repo, :dir, :key_for, :migrator, :max_resident, lru: %{}, quarantined: %{}]
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
@@ -42,6 +42,44 @@ defmodule AshCell.Manager do
   def delete(tenant), do: GenServer.call(__MODULE__, {:delete, tenant})
 
   def config, do: GenServer.call(__MODULE__, :config)
+
+  @doc """
+  Tenants whose cell refused to start, with the reason.
+
+  A lazily-migrated fleet fails one tenant at a time, at whatever hour that tenant
+  next wakes up. Without somewhere to look, that is an outage nobody hears about,
+  so quarantine is recorded rather than merely logged.
+  """
+  def quarantined, do: GenServer.call(__MODULE__, :quarantined)
+
+  @doc "Clears a tenant's quarantine so the next request retries activation."
+  def release(tenant), do: GenServer.call(__MODULE__, {:release, tenant})
+
+  @doc """
+  Activates every tenant in `tenants`, migrating each.
+
+  Run at deploy time. Eager migration is the primary path precisely because it
+  surfaces failures while someone is watching; lazy activation is the fallback for
+  tenants that were not in the list.
+  """
+  def migrate_all(tenants, opts \\ []) do
+    close_after? = Keyword.get(opts, :close_after?, true)
+
+    Enum.map(tenants, fn tenant ->
+      result =
+        case ensure_started(tenant) do
+          {:ok, pid} ->
+            info = AshCell.Cell.info(pid)
+            if close_after?, do: close(tenant)
+            {:ok, info.schema_version}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
+
+      {tenant, result}
+    end)
+  end
 
   def path_for(tenant), do: GenServer.call(__MODULE__, {:path_for, tenant})
 
@@ -79,9 +117,14 @@ defmodule AshCell.Manager do
            migrator: state.migrator}
 
         case DynamicSupervisor.start_child(AshCell.CellSupervisor, spec) do
-          {:ok, pid} -> {:reply, {:ok, pid}, mark(state, tenant)}
-          {:error, {:already_started, pid}} -> {:reply, {:ok, pid}, mark(state, tenant)}
-          {:error, reason} -> {:reply, {:error, reason}, state}
+          {:ok, pid} ->
+            {:reply, {:ok, pid}, state |> mark(tenant) |> unquarantine(tenant)}
+
+          {:error, {:already_started, pid}} ->
+            {:reply, {:ok, pid}, state |> mark(tenant) |> unquarantine(tenant)}
+
+          {:error, reason} ->
+            {:reply, {:error, reason}, quarantine(state, tenant, reason)}
         end
     end
   end
@@ -114,6 +157,11 @@ defmodule AshCell.Manager do
 
   def handle_call({:path_for, tenant}, _from, state), do: {:reply, path(state, tenant), state}
 
+  def handle_call(:quarantined, _from, state), do: {:reply, state.quarantined, state}
+
+  def handle_call({:release, tenant}, _from, state),
+    do: {:reply, :ok, unquarantine(state, tenant)}
+
   @impl true
   def handle_cast({:touch, tenant}, state), do: {:noreply, mark(state, tenant)}
 
@@ -122,6 +170,14 @@ defmodule AshCell.Manager do
       {:ok, pid} -> DynamicSupervisor.terminate_child(AshCell.CellSupervisor, pid)
       :error -> :ok
     end
+  end
+
+  defp quarantine(state, tenant, reason) do
+    %{state | quarantined: Map.put(state.quarantined, tenant, reason)}
+  end
+
+  defp unquarantine(state, tenant) do
+    %{state | quarantined: Map.delete(state.quarantined, tenant)}
   end
 
   defp mark(state, tenant),
