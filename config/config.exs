@@ -11,6 +11,12 @@ config :ash_cell, AshCell.TestRepo,
   migration_lock: false,
   migration_primary_key: [name: :id, type: :binary_id]
 
+config :ash_cell, :object_store,
+  endpoint: "http://127.0.0.1:9010",
+  bucket: "ashcell-test",
+  access_key_id: "ashcell",
+  secret_access_key: "ashcellsecret"
+
 if config_env() == :test do
   config :logger, level: :warning
 end

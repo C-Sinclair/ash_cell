@@ -33,6 +33,7 @@ defmodule AshCell.MixProject do
       {:ecto_sqlite3, "~> 0.12"},
       {:ecto_sql, "~> 3.13"},
       {:jason, "~> 1.0"},
+      {:req, "~> 0.5"},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
