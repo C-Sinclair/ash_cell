@@ -55,7 +55,7 @@ defmodule AshCell.MixProject do
 
     case Exqlite.Sqlite3.open(":memory:") do
       {:ok, db} ->
-        case Exqlite.Sqlite3.fetch_all(db, "PRAGMA cipher_version") do
+        case cipher_version(db) do
           {:ok, [[version]]} when is_binary(version) and version != "" ->
             Mix.shell().info("SQLCipher available: #{version}")
 
@@ -73,6 +73,14 @@ defmodule AshCell.MixProject do
 
       {:error, reason} ->
         Mix.raise("could not open in-memory database: #{inspect(reason)}")
+    end
+  end
+
+  # PRAGMA cipher_version only exists under SQLCipher; on plain SQLite the
+  # statement will not even prepare, which is the signal we want.
+  defp cipher_version(db) do
+    with {:ok, stmt} <- Exqlite.Sqlite3.prepare(db, "PRAGMA cipher_version") do
+      Exqlite.Sqlite3.fetch_all(db, stmt)
     end
   end
 end
