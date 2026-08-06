@@ -122,6 +122,7 @@ defmodule AshCell.Drain do
   tenant off a node without draining everything else.
   """
   def drain_tenant(tenant, store \\ nil, grace_ms \\ @default_grace_ms) do
+    warn_holders(tenant, grace_ms)
     quiesced? = await_quiescence(tenant, grace_ms)
 
     with :ok <- checkpoint(tenant),
@@ -139,6 +140,30 @@ defmodule AshCell.Drain do
         Logger.error("cell drain failed for #{inspect(tenant)}: #{inspect(reason)}")
         {:error, reason}
     end
+  end
+
+  @doc """
+  Tells long-lived holders to reconnect, before the socket is taken from them.
+
+  A LiveView will not release a cell on its own — it is holding it because a user
+  has the page open. Warned first, it can ask the browser to reconnect *while this
+  node can still answer*, so the client lands on the new owner deliberately instead
+  of discovering the disconnection when the node vanishes.
+
+  Warnings are jittered across the first half of the grace period. Every tab
+  reconnecting on the same millisecond is how a rolling deploy turns into a
+  thundering herd against a cold node that is also busy rehydrating cells.
+  """
+  def warn_holders(tenant, grace_ms) do
+    holders = AshCell.Holders.holders(tenant)
+    spread = max(div(grace_ms, 2), 1)
+
+    for {pid, index} <- Enum.with_index(holders) do
+      delay = if length(holders) > 1, do: div(index * spread, length(holders)), else: 0
+      Process.send_after(pid, {:ash_cell, :drain_imminent, tenant}, delay)
+    end
+
+    length(holders)
   end
 
   @doc """

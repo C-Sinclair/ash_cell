@@ -194,6 +194,67 @@ defmodule AshCell.DrainTest do
     end
   end
 
+  describe "warning holders before the socket dies" do
+    test "each holder is told to expect a reconnect" do
+      parent = self()
+
+      for _ <- 1..3 do
+        spawn(fn ->
+          AshCell.bind_held("acme")
+          send(parent, :held)
+
+          receive do
+            {:ash_cell, :drain_imminent, tenant} -> send(parent, {:warned, tenant})
+          after
+            2_000 -> send(parent, :never_warned)
+          end
+        end)
+      end
+
+      for _ <- 1..3, do: assert_receive(:held, 2_000)
+
+      assert 3 = AshCell.Drain.warn_holders("acme", 200)
+
+      for _ <- 1..3, do: assert_receive({:warned, "acme"}, 2_000)
+    end
+
+    test "warnings are spread out rather than fired all at once" do
+      # A whole fleet of tabs reconnecting on the same millisecond is how a
+      # rolling deploy becomes a thundering herd against a cold node.
+      parent = self()
+
+      for _ <- 1..6 do
+        spawn(fn ->
+          AshCell.bind_held("acme")
+          send(parent, :held)
+
+          receive do
+            {:ash_cell, :drain_imminent, _} ->
+              send(parent, {:warned_at, System.monotonic_time(:millisecond)})
+          after
+            3_000 -> :ok
+          end
+        end)
+      end
+
+      for _ <- 1..6, do: assert_receive(:held, 2_000)
+
+      AshCell.Drain.warn_holders("acme", 600)
+
+      times =
+        for _ <- 1..6 do
+          assert_receive {:warned_at, at}, 3_000
+          at
+        end
+
+      assert Enum.max(times) - Enum.min(times) > 50
+    end
+
+    test "a tenant with no holders is a no-op" do
+      assert 0 = AshCell.Drain.warn_holders("nobody_here", 100)
+    end
+  end
+
   describe "draining one tenant" do
     test "leaves the rest of the fleet alone" do
       write("stays", "Row")

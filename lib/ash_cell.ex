@@ -85,6 +85,39 @@ defmodule AshCell do
     :ok
   end
 
+  @doc """
+  Binds `tenant` for a long-lived process and registers it as a holder.
+
+  For processes that outlive a single unit of work — a LiveView, a per-tenant
+  GenServer, a channel. Unlike `with_tenant/2` there is no matching release: the
+  hold is cleaned up when the process dies, which is the only signal that reliably
+  arrives when a browser tab closes.
+
+  Call it before each piece of work rather than once at startup. The binding is a
+  repo pid and the process outlives it: a cell that is evicted, restarted, or
+  drained comes back as a new instance, and a binding taken once at startup then
+  points at a dead one.
+  """
+  @spec bind_held(term()) :: :ok | {:error, term()}
+  def bind_held(tenant) do
+    with {:ok, cell} <- AshCell.Manager.ensure_started(tenant) do
+      repo = repo()
+      repo.put_dynamic_repo(AshCell.Cell.repo_pid(cell))
+      Process.put(@tenant_key, tenant)
+      AshCell.Holders.hold(tenant)
+      :ok
+    end
+  end
+
+  @doc "Releases a hold taken with `bind_held/1`."
+  @spec release_held(term()) :: :ok
+  def release_held(tenant) do
+    AshCell.Holders.release(tenant)
+    Process.delete(@tenant_key)
+    repo().put_dynamic_repo(repo())
+    :ok
+  end
+
   @doc "Clears any tenant binding on this process."
   @spec unbind() :: :ok
   def unbind, do: restore({repo(), nil})

@@ -63,8 +63,32 @@ defmodule AshCell.Registry do
     :ok
   end
 
-  @doc "How many processes currently hold a binding for `tenant`."
+  @doc """
+  How many processes are using `tenant` right now.
+
+  Two populations, counted differently because they behave differently:
+
+    * **transient binds** from `AshCell.with_tenant/2` — bracketed, so a counter
+      is exact and cheap
+    * **holders** from `AshCell.bind_held/1` — long-lived processes like
+      LiveViews, tracked by `AshCell.Holders` so that a closed browser tab cleans
+      itself up
+
+  A drain waits on the sum. Counting only the transient half would report a cell
+  as idle between a user's keystrokes.
+  """
   def active_binds(tenant) do
+    transient =
+      case :ets.lookup(@binds, tenant) do
+        [{^tenant, count}] -> max(count, 0)
+        [] -> 0
+      end
+
+    transient + AshCell.Holders.count(tenant)
+  end
+
+  @doc "Transient bind count only, ignoring long-lived holders."
+  def transient_binds(tenant) do
     case :ets.lookup(@binds, tenant) do
       [{^tenant, count}] -> max(count, 0)
       [] -> 0
