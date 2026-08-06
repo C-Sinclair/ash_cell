@@ -44,10 +44,15 @@ defmodule AshCell.Cell do
     File.mkdir_p!(Path.dirname(path))
 
     repo_opts =
-      [name: nil, database: path, pool_size: 1]
+      # backoff_type: :stop makes an unopenable database fail immediately instead
+      # of DBConnection retrying for seconds. A cell that cannot be opened is
+      # almost never a transient condition -- it is a wrong or destroyed key, or a
+      # corrupt file -- and retrying turns a clear failure into a hang.
+      [name: nil, database: path, pool_size: 1, backoff_type: :stop]
       |> maybe_put_key(key)
 
-    with {:ok, repo_pid} <- repo.start_link(repo_opts),
+    with :ok <- verify_key(key, Keyword.get(opts, :encrypted?, false)),
+         {:ok, repo_pid} <- repo.start_link(repo_opts),
          {:ok, version} <- migrate(repo, repo_pid, migrator) do
       {:ok,
        %__MODULE__{
@@ -65,6 +70,13 @@ defmodule AshCell.Cell do
 
   defp maybe_put_key(opts, nil), do: opts
   defp maybe_put_key(opts, key), do: Keyword.put(opts, :key, key)
+
+  # A fleet that derives keys must never fall back to an unencrypted database
+  # when a key is missing. SQLite will happily create a plaintext file for a
+  # tenant whose key was destroyed, so the failure is silent and the result is
+  # unencrypted data on disk under a name that says it is protected. Refuse.
+  defp verify_key(nil, true), do: {:error, :no_key}
+  defp verify_key(_key, _encrypted?), do: :ok
 
   # Migration runs before the cell is available, so a tenant is never served
   # against a half-migrated schema. A failure stops the cell rather than letting

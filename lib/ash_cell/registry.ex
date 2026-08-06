@@ -44,8 +44,37 @@ defmodule AshCell.Registry do
 
   def count, do: Registry.count(__MODULE__)
 
-  @doc "Records that a process has bound `tenant`."
-  def bound(tenant), do: bump(tenant, 1)
+  @doc """
+  Marks `tenant` as closing, so no new work binds to it.
+
+  Waiting for quiescence is not enough on its own: the count can reach zero and a
+  new binder arrive before the close lands. Closing has to *stop* new binds, not
+  merely observe their absence.
+  """
+  def begin_closing(tenant), do: :ets.insert(@binds, {closing_key(tenant), true})
+
+  @doc "Clears the closing mark for `tenant`."
+  def end_closing(tenant), do: :ets.delete(@binds, closing_key(tenant))
+
+  @doc "Whether `tenant` is being closed right now."
+  def closing?(tenant), do: :ets.member(@binds, closing_key(tenant))
+
+  defp closing_key(tenant), do: {:closing, tenant}
+
+  @doc """
+  Records that a process has bound `tenant`, unless it is closing.
+
+  Returns `:ok`, or `:closing` so the caller can wait for the close to finish and
+  bind to the cell that replaces it.
+  """
+  def bound(tenant) do
+    if closing?(tenant) do
+      :closing
+    else
+      bump(tenant, 1)
+      :ok
+    end
+  end
 
   @doc """
   Records that a process has released `tenant`.

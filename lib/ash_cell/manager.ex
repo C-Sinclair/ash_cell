@@ -79,8 +79,30 @@ defmodule AshCell.Manager do
   @doc false
   def put_lease(tenant, lease), do: GenServer.call(__MODULE__, {:put_lease, tenant, lease})
 
-  @doc "Closes a tenant's cell. The database file is untouched."
-  def close(tenant), do: GenServer.call(__MODULE__, {:close, tenant})
+  @doc """
+  Closes a tenant's cell. The database file is untouched.
+
+  Waits briefly for in-flight work to finish first. Yanking a cell that a process
+  is bound to does not merely interrupt a query -- the bound process is holding a
+  repo pid, and its next call fails inside Ecto's registry with an error about
+  ETS keys, nowhere near the code that closed the cell. Waiting turns a confusing
+  crash into an ordinary pause.
+
+  Pass `force: true` to close regardless, and expect bound callers to fail.
+  """
+  def close(tenant, opts \\ []) do
+    AshCell.Registry.begin_closing(tenant)
+
+    try do
+      unless Keyword.get(opts, :force, false) do
+        AshCell.Drain.await_quiescence(tenant, Keyword.get(opts, :grace_ms, 1_000))
+      end
+
+      GenServer.call(__MODULE__, {:close, tenant})
+    after
+      AshCell.Registry.end_closing(tenant)
+    end
+  end
 
   @doc """
   Closes the cell and deletes the tenant's database, including its WAL sidecars.
@@ -155,6 +177,15 @@ defmodule AshCell.Manager do
     {:reply, {:error, :draining}, state}
   end
 
+  # A quarantined tenant is refused without re-attempting the activation that
+  # already failed. Retrying costs the same failure again -- a wrong key or a bad
+  # migration is not transient -- and each attempt logs another crash, burying the
+  # original cause. Clear it deliberately with release/1 once the cause is fixed.
+  def handle_call({:start, tenant}, _from, state)
+      when is_map_key(state.quarantined, tenant) do
+    {:reply, {:error, {:quarantined, state.quarantined[tenant]}}, state}
+  end
+
   def handle_call({:start, tenant}, _from, state) do
     case AshCell.Registry.lookup(tenant) do
       {:ok, pid} ->
@@ -169,6 +200,10 @@ defmodule AshCell.Manager do
            repo: state.repo,
            path: path(state, tenant),
            key: key_for(state, tenant),
+           # Encryption is expected whenever the fleet was given a key function.
+           # The cell uses this to tell "this fleet is unencrypted" apart from
+           # "this tenant's key is gone", which must fail rather than degrade.
+           encrypted?: not is_nil(state.key_for),
            migrator: state.migrator}
 
         case DynamicSupervisor.start_child(AshCell.CellSupervisor, spec) do
@@ -257,6 +292,11 @@ defmodule AshCell.Manager do
 
       state.lru
       |> Enum.filter(fn {tenant, _} -> MapSet.member?(resident, tenant) end)
+      # Never evict a cell somebody is using. Least-recently-*started* is not the
+      # same as unused: a LiveView can hold a cell open for hours while barely
+      # touching it, and evicting it breaks the holder rather than freeing memory
+      # that was actually idle.
+      |> Enum.reject(fn {tenant, _} -> AshCell.Registry.active_binds(tenant) > 0 end)
       |> Enum.min_by(fn {_, at} -> at end, fn -> nil end)
       |> case do
         {tenant, _} ->

@@ -50,18 +50,59 @@ defmodule AshCell do
   GenServer that only ever serves one tenant.
   """
   @spec bind(term()) :: {:ok, term()} | {:error, term()}
-  def bind(tenant) do
-    with {:ok, cell} <- AshCell.Manager.ensure_started(tenant) do
+  def bind(tenant), do: bind(tenant, 1)
+
+  # A cell can die between being looked up and being asked for its repo pid --
+  # evicted for inactivity, closed by a drain, or restarted after a crash. The
+  # window is small and entirely normal, so a caller should not see an exit from
+  # a GenServer it never knew about: resolve again and try once more.
+  defp bind(tenant, attempts_left) do
+    with :ok <- await_not_closing(tenant),
+         {:ok, cell} <- AshCell.Manager.ensure_started(tenant),
+         {:ok, repo_pid} <- fetch_repo_pid(cell),
+         :ok <- AshCell.Registry.bound(tenant) do
       repo = repo()
       previous = {repo.get_dynamic_repo(), Process.get(@tenant_key)}
 
-      repo.put_dynamic_repo(AshCell.Cell.repo_pid(cell))
+      repo.put_dynamic_repo(repo_pid)
       Process.put(@tenant_key, tenant)
       AshCell.Cell.note_query(cell)
-      AshCell.Registry.bound(tenant)
 
       {:ok, previous}
+    else
+      # The cell began closing between the check and the count. Undo and retry
+      # against whatever replaces it.
+      :closing when attempts_left > 0 ->
+        bind(tenant, attempts_left - 1)
+
+      :closing ->
+        {:error, :cell_closing}
+
+      {:error, :cell_died} when attempts_left > 0 ->
+        bind(tenant, attempts_left - 1)
+
+      {:error, :cell_died} ->
+        {:error, :cell_unavailable}
+
+      other ->
+        other
     end
+  end
+
+  # Bounded, because a close that never completes must surface as an error rather
+  # than blocking a request forever.
+  defp await_not_closing(tenant, attempts \\ 100) do
+    cond do
+      not AshCell.Registry.closing?(tenant) -> :ok
+      attempts == 0 -> {:error, :cell_closing}
+      true -> Process.sleep(10) && await_not_closing(tenant, attempts - 1)
+    end
+  end
+
+  defp fetch_repo_pid(cell) do
+    {:ok, AshCell.Cell.repo_pid(cell)}
+  catch
+    :exit, _ -> {:error, :cell_died}
   end
 
   @doc "Restores a binding returned by `bind/1`."
