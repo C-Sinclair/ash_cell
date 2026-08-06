@@ -9,7 +9,10 @@ defmodule AshCell.Supervisor do
     children = [
       AshCell.Registry,
       {DynamicSupervisor, name: AshCell.CellSupervisor, strategy: :one_for_one},
-      {AshCell.Manager, opts}
+      {AshCell.Manager, opts},
+      # Last in the list, so it is first to terminate: cells are still alive and
+      # the manager is still answering while the drain runs.
+      {AshCell.Drain, opts}
     ]
 
     Supervisor.init(children, strategy: :rest_for_one)

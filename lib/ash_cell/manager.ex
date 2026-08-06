@@ -14,11 +14,29 @@ defmodule AshCell.Manager do
 
   @default_max_resident 256
 
-  defstruct [:repo, :dir, :key_for, :migrator, :max_resident, lru: %{}, quarantined: %{}]
+  defstruct [
+    :repo,
+    :dir,
+    :key_for,
+    :migrator,
+    :max_resident,
+    :store,
+    :owner,
+    lru: %{},
+    quarantined: %{},
+    leases: %{},
+    sealed?: false
+  ]
 
   def start_link(opts), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
-  @doc "Returns the running cell for `tenant`, starting it if needed."
+  @doc """
+  Returns the running cell for `tenant`, starting it if needed.
+
+  Returns `{:error, :draining}` once the node has been sealed. An already-resident
+  cell keeps serving while it drains, so in-flight work can finish; only *new*
+  activations are refused.
+  """
   def ensure_started(tenant) do
     case AshCell.Registry.lookup(tenant) do
       {:ok, pid} ->
@@ -29,6 +47,37 @@ defmodule AshCell.Manager do
         GenServer.call(__MODULE__, {:start, tenant}, 30_000)
     end
   end
+
+  @doc """
+  Stops this node taking on new cells.
+
+  The first step of a drain. Without it the sweep races itself: a request arriving
+  mid-drain reactivates a tenant that was just handed over, and the node shuts down
+  still holding a lease it believes it released.
+  """
+  def seal, do: GenServer.call(__MODULE__, :seal)
+
+  @doc "Lets the node accept cells again. Mainly for tests."
+  def unseal, do: GenServer.call(__MODULE__, :unseal)
+
+  def sealed?, do: GenServer.call(__MODULE__, :sealed?)
+
+  @doc "The configured object store, if this fleet replicates."
+  def store, do: GenServer.call(__MODULE__, :store)
+
+  @doc "The lease held for `tenant`, if any."
+  def lease(tenant), do: GenServer.call(__MODULE__, {:lease, tenant})
+
+  @doc "The generation this node owns for `tenant`, if any."
+  def generation(tenant) do
+    case lease(tenant) do
+      nil -> nil
+      lease -> lease.generation
+    end
+  end
+
+  @doc false
+  def put_lease(tenant, lease), do: GenServer.call(__MODULE__, {:put_lease, tenant, lease})
 
   @doc "Closes a tenant's cell. The database file is untouched."
   def close(tenant), do: GenServer.call(__MODULE__, {:close, tenant})
@@ -92,7 +141,9 @@ defmodule AshCell.Manager do
       dir: Keyword.fetch!(opts, :dir),
       key_for: Keyword.get(opts, :key_for),
       migrator: Keyword.get(opts, :migrator),
-      max_resident: Keyword.get(opts, :max_resident, @default_max_resident)
+      max_resident: Keyword.get(opts, :max_resident, @default_max_resident),
+      store: Keyword.get(opts, :store),
+      owner: Keyword.get(opts, :owner, to_string(node()))
     }
 
     File.mkdir_p!(state.dir)
@@ -100,6 +151,10 @@ defmodule AshCell.Manager do
   end
 
   @impl true
+  def handle_call({:start, _tenant}, _from, %{sealed?: true} = state) do
+    {:reply, {:error, :draining}, state}
+  end
+
   def handle_call({:start, tenant}, _from, state) do
     case AshCell.Registry.lookup(tenant) do
       {:ok, pid} ->
@@ -131,7 +186,10 @@ defmodule AshCell.Manager do
 
   def handle_call({:close, tenant}, _from, state) do
     stop_cell(tenant)
-    {:reply, :ok, %{state | lru: Map.delete(state.lru, tenant)}}
+    AshCell.Registry.forget(tenant)
+
+    {:reply, :ok,
+     %{state | lru: Map.delete(state.lru, tenant), leases: Map.delete(state.leases, tenant)}}
   end
 
   def handle_call({:delete, tenant}, _from, state) do
@@ -156,6 +214,16 @@ defmodule AshCell.Manager do
   end
 
   def handle_call({:path_for, tenant}, _from, state), do: {:reply, path(state, tenant), state}
+
+  def handle_call(:seal, _from, state), do: {:reply, :ok, %{state | sealed?: true}}
+  def handle_call(:unseal, _from, state), do: {:reply, :ok, %{state | sealed?: false}}
+  def handle_call(:sealed?, _from, state), do: {:reply, state.sealed?, state}
+  def handle_call(:store, _from, state), do: {:reply, state.store, state}
+  def handle_call({:lease, tenant}, _from, state), do: {:reply, state.leases[tenant], state}
+
+  def handle_call({:put_lease, tenant, lease}, _from, state) do
+    {:reply, :ok, %{state | leases: Map.put(state.leases, tenant, lease)}}
+  end
 
   def handle_call(:quarantined, _from, state), do: {:reply, state.quarantined, state}
 

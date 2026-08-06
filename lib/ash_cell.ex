@@ -58,6 +58,7 @@ defmodule AshCell do
       repo.put_dynamic_repo(AshCell.Cell.repo_pid(cell))
       Process.put(@tenant_key, tenant)
       AshCell.Cell.note_query(cell)
+      AshCell.Registry.bound(tenant)
 
       {:ok, previous}
     end
@@ -66,6 +67,14 @@ defmodule AshCell do
   @doc "Restores a binding returned by `bind/1`."
   @spec restore({term(), term()}) :: :ok
   def restore({dynamic_repo, tenant}) do
+    # Release the binding this process currently holds before adopting the
+    # previous one, so a nested with_tenant/2 decrements the inner tenant rather
+    # than leaking a count that would make it look permanently busy to a drain.
+    case Process.get(@tenant_key) do
+      nil -> :ok
+      current -> AshCell.Registry.unbound(current)
+    end
+
     repo().put_dynamic_repo(dynamic_repo)
 
     case tenant do
@@ -160,6 +169,14 @@ defmodule AshCell do
 
   @doc "Tenants with a resident (open) cell right now."
   defdelegate resident_tenants(), to: AshCell.Registry
+
+  @doc """
+  Hands every resident cell over and releases its lease.
+
+  Call before the node goes away. Runs automatically on supervised shutdown; see
+  `AshCell.Drain` for why the ordering inside it matters.
+  """
+  defdelegate drain(opts \\ []), to: AshCell.Drain, as: :run
 
   @doc "Per-cell stats for the resident fleet."
   def fleet do
