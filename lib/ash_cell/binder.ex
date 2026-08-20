@@ -31,12 +31,13 @@ defmodule AshCell.Binder do
   same `BEGIN`. A statement that would resolve to a *different* cell is refused
   rather than silently committing on its own — see `AshCell.transaction/2`.
 
-  What re-resolving still cannot promise is that the cell survives the action. A
-  drain or eviction that takes the cell mid-transaction closes the connection the
-  transaction is open on, and an uncommitted transaction on a closed connection
-  cannot commit — so the action fails rather than half-applying. Whether every
-  drain path is that clean is not yet pinned down by a test, and should not be
-  claimed until it is.
+  What re-resolving still cannot promise is that the cell survives the action — but
+  the failure is now the safe one. A drain or eviction that takes the cell
+  mid-transaction closes the connection the transaction is open on, and an
+  uncommitted transaction on a closed connection cannot commit, so the action
+  fails and the file never received any of it. Tested in
+  `test/transaction_test.exs`, because "the work is lost" and "half the work is
+  kept" are very different answers and the difference is the whole point.
   """
 
   @behaviour AshSqlite.TenantBinder

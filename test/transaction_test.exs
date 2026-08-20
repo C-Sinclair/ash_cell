@@ -166,6 +166,42 @@ defmodule AshCell.TransactionTest do
     end
   end
 
+  describe "a cell taken mid-transaction" do
+    test "aborts the transaction rather than half-applying it" do
+      # The drain path's worst case: a cell is taken while an action is partway
+      # through. An uncommitted transaction on a closed connection cannot commit,
+      # so the work is lost rather than half-kept -- which is the outcome worth
+      # having, and the one that was unavailable before transactions.
+      test_pid = self()
+
+      task =
+        Task.async(fn ->
+          try do
+            AshCell.transaction("acme", fn ->
+              {:ok, _} = BoundPatient.create("First", tenant: "acme")
+              send(test_pid, :first_written)
+              receive do: (:go -> :ok)
+              BoundPatient.create("Second", tenant: "acme")
+            end)
+          rescue
+            error -> {:raised, error.__struct__}
+          catch
+            :exit, _ -> :exited
+          end
+        end)
+
+      assert_receive :first_written, 5_000
+
+      AshCell.Manager.close("acme", force: true)
+      send(task.pid, :go)
+
+      assert Task.await(task, 10_000) in [{:raised, Ash.Error.Unknown}, :exited]
+
+      # Reopening reads the file, which never received the commit.
+      assert {:ok, []} = BoundPatient.read(tenant: "acme")
+    end
+  end
+
   describe "what transactions did not break" do
     test "an atomic update is still atomic" do
       {:ok, row} = BoundPatient.create("Before", tenant: "acme")
