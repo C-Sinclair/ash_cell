@@ -24,12 +24,19 @@ defmodule AshCell.Binder do
   stale mid-action. Asking again costs a registry lookup and a process-dictionary
   write.
 
-  What it does not give you is a guarantee that a multi-statement action runs
-  entirely against one instance of a cell. It cannot: AshSqlite reports
-  `can?(:transact) → false`, so a multi-step action was never atomic here, and a
-  drain can land between two of its statements. That is a real gap and it is the
-  same gap the workspace overview already records — the binder does not widen it,
-  but it does not close it either.
+  Re-resolving does not cost atomicity, which was the obvious worry. `AshCell.Resource`
+  sets `transactions? true`, so Ash wraps a multi-step action in one transaction,
+  and a transaction lives on one connection: while it is open, asking again for the
+  same tenant returns the same cell repo pid and the statement lands inside the
+  same `BEGIN`. A statement that would resolve to a *different* cell is refused
+  rather than silently committing on its own — see `AshCell.transaction/2`.
+
+  What re-resolving still cannot promise is that the cell survives the action. A
+  drain or eviction that takes the cell mid-transaction closes the connection the
+  transaction is open on, and an uncommitted transaction on a closed connection
+  cannot commit — so the action fails rather than half-applying. Whether every
+  drain path is that clean is not yet pinned down by a test, and should not be
+  claimed until it is.
   """
 
   @behaviour AshSqlite.TenantBinder

@@ -24,11 +24,25 @@ defmodule AshCell.Resource do
 
   ## What it actually does
 
-  One thing: it sets `tenant_binder AshCell.Binder` in the resource's `sqlite`
-  section. Everything else is `AshSqlite.TenantBinder`, in the data layer, which
-  asks the binder which connection to use once per statement.
+  Three things, all in the resource's `sqlite` section or its `changes`:
 
-  Setting `tenant_binder` yourself wins — the transformer only fills in a default.
+    * sets `tenant_binder AshCell.Binder`, which is how the data layer learns which
+      connection a tenanted statement runs on — once per statement, in the process
+      about to issue it
+    * sets `transactions? true`, so Ash wraps multi-step actions in a transaction
+      instead of leaving a failed one half-applied
+    * adds `AshCell.Resource.Changes.CarryTenant`, because the one callback that
+      opens the transaction runs above the data layer and so cannot read the tenant
+      off a changeset the way every other callback does
+
+  Setting `tenant_binder` or `transactions?` yourself wins — the transformer only
+  fills in defaults. `transactions? false` gets you the old behaviour, where a
+  multi-step action was never atomic.
+
+  A transaction cannot span two cells: they are separate files on separate
+  connections, and SQLite cannot commit across database files atomically in WAL
+  mode. That case raises rather than committing half the work. `AshCell.transaction/2`
+  is the way to put several actions in one transaction.
 
   ## Why the data layer rather than action hooks
 

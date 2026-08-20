@@ -24,9 +24,11 @@ Three findings reshape the plan. Two make it smaller, one makes it more honest.
    upload interval (~1s). Achieving RPO=0 means gating the client ack on the segment PUT,
    which drags in the entire pre-ack observability problem (§4). Rev 1 conflated the two.
    **This is now a deliberate fork in the road, not an assumption.**
-3. **AshSqlite has no aggregates and no transactions** (`can?(_, :transact) → false`,
-   `can?(_, {:aggregate, _}) → false`). Verified in source. The rev 1 "zero resource
-   changes" claim is false and is withdrawn.
+3. **AshSqlite has no aggregates** (`can?(_, {:aggregate, _}) → false`). Verified in
+   source. The rev 1 "zero resource changes" claim is false and is withdrawn.
+   **Transactions, previously listed here, are now implemented** in the fork behind a
+   `transactions?` option and turned on by `AshCell.Resource`; the earlier
+   `can?(_, :transact) → false` was a data layer default, not a SQLite limitation.
 
 ## 1. What AshCell is
 
@@ -210,13 +212,24 @@ This replaces rev 1's "zero changes" claim.
 | Joins / filters on relationships | yes, **same data layer and same repo only** |
 | Upsert, `exists` subqueries | yes |
 | **Aggregates** (`count`, `sum`, `first`, aggregate filter/sort) | **no** |
-| **Transactions** (`:transact`) | **no** |
+| **Transactions** (`:transact`) | **yes, opt-in per resource** |
 | Lateral joins, `distinct`, locks | no |
 
-`:transact → false` is the one with teeth: Ash will not wrap actions in a transaction, so
-multi-step actions and bulk operations are not atomic, and an after-hook failure leaves the
-primary write committed. **This is a data-integrity semantics change, and it must be
-surfaced loudly**, not buried in a capability table.
+Transactions were the gap with teeth — an after-hook failure left the primary write
+committed — and they are now closed. The fork adds a `transactions?` option to the `sqlite`
+section, off by default so upstream behaviour is unchanged, and `AshCell.Resource` turns it
+on. Writes open as `BEGIN IMMEDIATE`, because a deferred read-then-write has to upgrade its
+lock and SQLite fails an upgrade immediately rather than waiting out `busy_timeout`.
+
+The single-writer objection that justified the old default does not bite in this layout:
+one file per tenant with `pool_size: 1` means a second writer for the same tenant waits for
+a connection instead of reaching SQLite's write lock.
+
+**The remaining boundary is real and is enforced, not documented away:** a transaction
+cannot span two cells. They are separate files on separate connections, and SQLite loses
+cross-database atomicity in WAL mode even with `ATTACH`. A statement for another tenant
+inside an open transaction raises. `AshCell.transaction/2` puts several actions in one
+transaction on one cell.
 
 **Cross-boundary (global Postgres ↔ tenant cell):** relationship *loading* works via
 separate queries and in-memory stitching. Filtering, sorting, and aggregating tenanted rows
@@ -224,8 +237,8 @@ by a global attribute cannot be pushed to SQL. Design response: denormalise the 
 you filter/sort by into the cell at write time.
 
 **Consequence for the pitch:** the portable surface is "resources using expression
-calculations, no aggregates, no transaction-dependent hooks." A Stage 1 deliverable is an
-audit mix task that tells you which of your resources qualify.
+calculations, no aggregates, and no transaction that has to span tenants." A Stage 1
+deliverable is an audit mix task that tells you which of your resources qualify.
 
 ### 4.6 Known-unanswered operational problems
 
@@ -249,8 +262,11 @@ Stage 3 rather than pretended away:
   control. Note Turso's counter-position: "a database is a file rather than a process — no
   cold starts."
 - **Lazy migration failure is a single-tenant outage at an unwatched hour**, possibly
-  mid-migration given no transaction support. Eager fleet migration on deploy should be
-  primary; lazy is the fallback; quarantine state required.
+  mid-migration: `AshCell.Migrator` issues its steps directly rather than wrapping them,
+  so a set that fails halfway leaves the cell part-migrated. SQLite does have
+  transactional DDL, so this is now fixable rather than inherent — it was not, when
+  `:transact` was off. Eager fleet migration on deploy should be primary; lazy is the
+  fallback; quarantine state required.
 
 ## 5. The demo
 
@@ -280,12 +296,16 @@ number we can actually ship. If Path B is ever demoed, it must show ~90ms and sa
 **Proceed past Stage 1 only if:**
 - The context repo override works as documented, with no wrapper data layer needed.
 - Cross-data-layer relationship loading is fast enough to be idiomatic.
-- The no-aggregates / no-transactions constraint is tolerable for the target market, or
-  upstreaming aggregates is a project we want.
+- The no-aggregates constraint is tolerable for the target market, or upstreaming
+  aggregates is a project we want. (Transactions were on this list and have been
+  implemented; aggregates are the remaining gap.)
 - Resident-cell density is economic on measured numbers, not estimates.
 
-**Reconsider entirely if:** the transaction gap makes the data-integrity story
-unsellable to the compliance market we're targeting, which would be ironic and fatal.
+**Reconsider entirely if:** the data-integrity story is unsellable to the compliance
+market we're targeting, which would be ironic and fatal. The transaction gap was the
+sharpest version of this risk and is now closed within a cell; what remains is that
+nothing spanning two tenants can be atomic, which is inherent to database-per-tenant
+rather than a property of this implementation.
 
 ## 7. Prior art
 

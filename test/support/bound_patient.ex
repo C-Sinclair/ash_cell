@@ -27,6 +27,15 @@ defmodule AshCell.Test.BoundPatient do
   actions do
     defaults [:read, :destroy, create: [:name]]
 
+    create :create_then_fail do
+      accept [:name]
+
+      change after_action(fn _changeset, _record, _context ->
+               {:error,
+                Ash.Error.Changes.InvalidAttribute.exception(field: :name, message: "deliberate")}
+             end)
+    end
+
     update :rename do
       require_atomic? true
       accept [:name]
@@ -35,6 +44,7 @@ defmodule AshCell.Test.BoundPatient do
 
   code_interface do
     define :create, args: [:name]
+    define :create_then_fail, args: [:name]
     define :read
     define :rename, args: [:name]
   end

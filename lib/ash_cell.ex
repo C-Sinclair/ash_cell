@@ -180,6 +180,114 @@ defmodule AshCell do
   end
 
   @doc """
+  Runs `fun` inside a single transaction on `tenant`'s cell.
+
+  Each Ash action already transacts on its own once a resource has
+  `AshCell.Resource`, so this is for making *several* of them atomic together:
+
+      AshCell.transaction("acme", fn ->
+        {:ok, patient} = MyApp.Patient.create("Ada", tenant: "acme")
+        {:ok, _} = MyApp.Visit.create(patient.id, tenant: "acme")
+      end)
+
+  Actions inside join this transaction rather than opening their own — Ash checks
+  `c:Ash.DataLayer.in_transaction?/1` first and skips resources already in one.
+  Returns `{:ok, result}` or `{:error, reason}`, like `c:Ecto.Repo.transaction/2`.
+  Call `rollback/1` to abort.
+
+  Opened as `BEGIN IMMEDIATE`, so the write lock is taken up front. A deferred
+  transaction that reads and then writes has to upgrade its lock, and SQLite
+  cannot make an upgrade wait — it fails immediately, regardless of
+  `busy_timeout`.
+
+  ## One cell per transaction
+
+  A transaction lives on one connection and a cell is one file, so this cannot
+  span tenants. SQLite can commit across `ATTACH`ed databases, but not when they
+  are in WAL mode — and cells are, because replication needs the WAL. Nesting a
+  different tenant raises rather than silently giving you two independent commits.
+  """
+  @spec transaction(term(), (-> result)) :: {:ok, result} | {:error, term()} when result: var
+  def transaction(tenant, fun) when is_function(fun, 0) do
+    assert_same_cell!(tenant)
+
+    deferring_notifications(fn ->
+      with_tenant(tenant, fn -> repo().transaction(fun, mode: :immediate) end)
+    end)
+  end
+
+  defp assert_same_cell!(tenant) do
+    current = bound_tenant()
+
+    if current && current != tenant && in_transaction?() do
+      raise ArgumentError, """
+      cannot open a transaction on #{inspect(tenant)} while one is open on \
+      #{inspect(current)}.
+
+      Each tenant is a separate SQLite file with its own connection, so these \
+      would be two independent transactions: the inner one would commit on its \
+      own and survive a rollback of the outer. Finish one before opening the \
+      other, and if the work genuinely spans tenants, make that ordering explicit \
+      rather than implicit in a nesting.
+      """
+    end
+
+    :ok
+  end
+
+  # Mirrors what `Ash.transaction/3` does around a transaction it opens itself.
+  # Ash defers notifications while one is open and expects whoever opened it to
+  # flush them on commit; without this they are built, never sent, and Ash warns
+  # about having missed them. `Ash.transaction/3` cannot just be delegated to,
+  # because it hardcodes its transaction reason and so leaves no channel for the
+  # tenant to reach the data layer.
+  defp deferring_notifications(fun) do
+    started? = !Process.put(:ash_started_transaction?, true)
+    outer = Process.delete(:ash_notifications)
+
+    try do
+      fun.() |> tap(&flush_or_discard(&1, started?))
+    after
+      if started?, do: Process.delete(:ash_started_transaction?)
+      if outer, do: Process.put(:ash_notifications, outer)
+    end
+  end
+
+  defp flush_or_discard({:ok, _committed}, true), do: flush_notifications()
+  defp flush_or_discard({:ok, _committed}, false), do: :ok
+
+  # Rolled back, so the notifications describe writes that did not happen.
+  defp flush_or_discard({:error, _rolled_back}, _started?), do: Process.delete(:ash_notifications)
+
+  defp flush_notifications do
+    (Process.delete(:ash_notifications) || [])
+    |> Ash.Notifier.notify()
+  end
+
+  @doc """
+  Aborts the transaction opened by `transaction/2`, which returns `{:error, term}`.
+  """
+  @spec rollback(term()) :: no_return()
+  def rollback(term), do: repo().rollback(term)
+
+  @doc """
+  Whether this process is inside a transaction on the cell it is bound to.
+
+  False when nothing is bound: a repo reached only through `put_dynamic_repo/1` is
+  never started under its module name, and asking Ecto about it would raise
+  rather than answer.
+  """
+  @spec in_transaction?() :: boolean()
+  def in_transaction? do
+    repo = repo()
+
+    case repo.get_dynamic_repo() do
+      pid when is_pid(pid) -> repo.in_transaction?()
+      _unbound -> false
+    end
+  end
+
+  @doc """
   The tenant bound to this process, or `nil`.
 
   Read from the process dictionary rather than derived by searching the registry
