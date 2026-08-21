@@ -1,0 +1,18 @@
+{
+  "name": "collab-editor-assets",
+  "private": true,
+  "description": "Lexical and Yjs are bundled from npm; everything else comes from the Elixir deps. Every @lexical/* package must stay on one version — two copies of `lexical` in the tree means the Yjs binding and the editor are different module instances, which fails at runtime rather than at build time.",
+  "dependencies": {
+    "@lexical/dragon": "0.49.0",
+    "@lexical/rich-text": "0.49.0",
+    "@lexical/selection": "0.49.0",
+    "@lexical/utils": "0.49.0",
+    "@lexical/yjs": "0.49.0",
+    "lexical": "0.49.0",
+    "y-protocols": "^1.0.7",
+    "yjs": "^13.6.32"
+  },
+  "devDependencies": {
+    "playwright": "^1.62.1"
+  }
+}

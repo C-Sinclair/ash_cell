@@ -10,7 +10,7 @@ MyApp.Patient |> Ash.read!(tenant: "acme")
 MyApp.Patient.create("Ada Lovelace", tenant: "acme")
 ```
 
-> **Status: experimental.** Working end to end with a test suite and a demo, but
+> **Status: experimental.** Working end to end with a test suite and two demos, but
 > the API is not stable and it has not been run in production. See
 > [What's proven, and what isn't](#whats-proven-and-what-isnt).
 
@@ -392,10 +392,24 @@ Known limits, stated because they are real:
 - **Durability is whatever your pragmas say.** `exqlite` defaults `synchronous` to
   `:normal`, which in WAL mode means a returned `COMMIT` has not been fsynced.
 
+## Demos
+
+Two runnable Phoenix applications under [`demos/`](demos), each with a README arguing what it
+proves and where it stops:
+
+- [`demos/console`](demos/console) — one cell per **tenant**. Physical isolation, encryption
+  at rest, single-writer ownership, object-store durability, N+1 immunity, and the deploy
+  drain, measured against Postgres on the same query.
+- [`demos/collab_editor`](demos/collab_editor) — one cell per **document**. A Lexical + Yjs
+  collaborative rich text editor, built to show that the cell boundary is a choice. Yjs makes
+  the editing converge; the cell makes *compaction* — merging the update log into a snapshot
+  and truncating it — safe, which is the read-modify-write a CRDT leaves unsolved.
+
 ## Documentation
 
 - [Design spec, staging plan, and verified constraints](docs/spec.md)
 - [Deterministic simulation testing](docs/dst.md)
+- [What the demos prove](demos/README.md)
 
 ## License
 
