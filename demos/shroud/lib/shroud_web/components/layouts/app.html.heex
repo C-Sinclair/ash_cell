@@ -1,0 +1,6 @@
+<main class="h-full">
+  <%!-- Without this the app has no way to speak to the user at all: every put_flash
+        renders nowhere, so "Added.", "No user @x", and every error are silently lost. --%>
+  <.flash_group flash={@flash} />
+  {@inner_content}
+</main>

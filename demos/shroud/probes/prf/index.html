@@ -1,0 +1,126 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Shroud probe — WebAuthn PRF</title>
+<style>
+  body { font: 15px/1.6 ui-sans-serif, system-ui, sans-serif; max-width: 46rem; margin: 3rem auto; padding: 0 1.5rem; }
+  button { font: inherit; padding: .5rem 1rem; margin-right: .5rem; }
+  pre { background: #f4f4f5; padding: .75rem; border-radius: .375rem; overflow-x: auto; font-size: 13px; }
+  .ok { color: #15803d; font-weight: 600 } .bad { color: #b91c1c; font-weight: 600 }
+  table { border-collapse: collapse; width: 100% } td, th { text-align: left; border-bottom: 1px solid #e4e4e7; padding: .35rem .5rem }
+</style>
+
+<h1>WebAuthn PRF probe</h1>
+<p>
+  Decides Stage 3 of <code>docs/prd.md</code>. The question is not "does a passkey work"
+  — it is whether the authenticator returns a <strong>deterministic</strong> 32 bytes for a
+  fixed salt. If it does, that seeds the master key. If it does not, the recovery
+  passphrase stops being a fallback and becomes the primary path.
+</p>
+<p>
+  Requires a secure context, so serve it rather than opening the file:
+  <code>python3 -m http.server 8111</code> then <a href="http://localhost:8111/">localhost:8111</a>.
+</p>
+
+<p>
+  <button id="reg">1. Register a passkey</button>
+  <button id="auth" disabled>2. Assert twice, compare</button>
+</p>
+
+<table id="results"><tbody></tbody></table>
+<pre id="log">ready.</pre>
+
+<script>
+const SALT = new TextEncoder().encode("shroud.v1");
+const logEl = document.getElementById("log");
+const rows = document.querySelector("#results tbody");
+let credentialId = null;
+
+const log = (...a) => { logEl.textContent += "\n" + a.join(" "); };
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const row = (k, v, cls) => {
+  const tr = document.createElement("tr");
+  tr.innerHTML = `<th>${k}</th><td class="${cls || ""}">${v}</td>`;
+  rows.appendChild(tr);
+};
+
+function randomChallenge() {
+  return crypto.getRandomValues(new Uint8Array(32));
+}
+
+document.getElementById("reg").onclick = async () => {
+  rows.innerHTML = ""; logEl.textContent = "registering…";
+  try {
+    const cred = await navigator.credentials.create({
+      publicKey: {
+        challenge: randomChallenge(),
+        rp: { name: "Shroud probe", id: location.hostname },
+        user: { id: crypto.getRandomValues(new Uint8Array(16)), name: "probe@shroud.test", displayName: "Probe" },
+        pubKeyCredParams: [{ type: "public-key", alg: -7 }, { type: "public-key", alg: -257 }],
+        authenticatorSelection: { residentKey: "required", userVerification: "required" },
+        extensions: { prf: {} },
+      },
+    });
+    credentialId = cred.rawId;
+    const ext = cred.getClientExtensionResults();
+    const enabled = ext.prf && ext.prf.enabled;
+    row("Authenticator", navigator.userAgent.slice(0, 90));
+    row("prf.enabled at registration", enabled ? "yes" : "no / not reported", enabled ? "ok" : "bad");
+    log("registered. extensions:", JSON.stringify(ext));
+    document.getElementById("auth").disabled = false;
+    if (!enabled) log("NOTE: some authenticators report enabled only at assertion time. Continue to step 2 regardless.");
+  } catch (e) {
+    row("Registration", e.name + ": " + e.message, "bad");
+    log("failed:", e.stack || e);
+  }
+};
+
+async function evalPrf() {
+  const assertion = await navigator.credentials.get({
+    publicKey: {
+      challenge: randomChallenge(),
+      allowCredentials: [{ type: "public-key", id: credentialId }],
+      userVerification: "required",
+      extensions: { prf: { eval: { first: SALT } } },
+    },
+  });
+  const ext = assertion.getClientExtensionResults();
+  return ext.prf && ext.prf.results && ext.prf.results.first;
+}
+
+document.getElementById("auth").onclick = async () => {
+  log("\nasserting (you will be prompted twice)…");
+  try {
+    const a = await evalPrf();
+    if (!a) {
+      row("PRF output", "absent — authenticator does not support hmac-secret", "bad");
+      log("VERDICT: no PRF. Passphrase must be the primary path on this platform.");
+      return;
+    }
+    row("PRF output length", new Uint8Array(a).byteLength + " bytes",
+        new Uint8Array(a).byteLength === 32 ? "ok" : "bad");
+    const b = await evalPrf();
+    const same = b64(a) === b64(b);
+    row("Deterministic across assertions", same ? "yes" : "NO — unusable as a key", same ? "ok" : "bad");
+    row("Digest (first 16 hex)", b64(a).slice(0, 16) + "…");
+
+    // The thing we actually need: a usable AES key derived from it.
+    const ikm = await crypto.subtle.importKey("raw", a, "HKDF", false, ["deriveKey"]);
+    const kek = await crypto.subtle.deriveKey(
+      { name: "HKDF", hash: "SHA-256", salt: new Uint8Array(32), info: new TextEncoder().encode("shroud.kek.v1") },
+      ikm, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]);
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    const mk = crypto.getRandomValues(new Uint8Array(32));
+    const wrapped = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, kek, mk);
+    const back = await crypto.subtle.decrypt({ name: "AES-GCM", iv }, kek, wrapped);
+    const roundtrip = b64(back) === b64(mk);
+    row("HKDF → AES-GCM wrap/unwrap of a master key", roundtrip ? "round-trips" : "FAILED", roundtrip ? "ok" : "bad");
+
+    log("VERDICT:", same && roundtrip
+      ? "PRF usable. Stage 3 can derive the KEK from the passkey on this platform."
+      : "PRF present but unusable. Treat passphrase as primary.");
+  } catch (e) {
+    row("Assertion", e.name + ": " + e.message, "bad");
+    log("failed:", e.stack || e);
+  }
+};
+</script>
