@@ -174,7 +174,12 @@ defmodule AshCell.Replicator do
     with {:ok, txid} <- resolve_txid(store, cell_key, txid),
          {:ok, bytes, _etag} <-
            AshCell.ObjectStore.get(store, snapshot_key(cell_key, txid)) do
-      AshCell.close(cell_key)
+      # `await_repo?` is load-bearing here, not defensive. A plain close returns while
+      # the cell's SQLite connection is still shutting down, and that connection
+      # checkpoints the WAL into the `.db` on its way out -- over the bytes written
+      # below. The restore then reports success over a database with none of the
+      # restored rows in it.
+      AshCell.Manager.close(cell_key, await_repo?: true)
       path = AshCell.path_for(cell_key)
 
       for suffix <- ["-wal", "-shm"], do: File.rm(path <> suffix)

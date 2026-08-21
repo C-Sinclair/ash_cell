@@ -205,6 +205,23 @@ defmodule AshCell do
     end
   end
 
+  # `bind/1` documents its error tuples, and every one of them used to arrive here
+  # as a FunctionClauseError naming `with_bound/2` -- a private function the caller
+  # has never heard of, with the real reason buried in the argument list. Returning
+  # the tuple is not enough either: `with_tenant/2` is expected to run `fun` and
+  # give back its value, so a caller who ignores the return would carry on with an
+  # unbound process and write into whichever cell happened to be bound already.
+  # Raise, with the reason in the message.
+  defp with_bound({:error, reason}, _fun) do
+    raise ArgumentError, """
+    could not bind the cell: #{inspect(reason)}
+
+    The process is not bound, so no work was run. Call `AshCell.bind/1` directly if
+    you want to handle this rather than raise -- it returns the same reason as a
+    tuple.
+    """
+  end
+
   @doc """
   Runs `fun` inside a single transaction on `tenant`'s cell.
 

@@ -44,6 +44,9 @@ defmodule AshCell.Cell do
   def note_query(pid), do: GenServer.cast(pid, :note_query)
 
   @doc false
+  def repo_stopped?(pid), do: GenServer.call(pid, :repo_stopped?)
+
+  @doc false
   def ship_now(pid), do: GenServer.call(pid, :ship_now, 30_000)
 
   @impl true
@@ -126,6 +129,16 @@ defmodule AshCell.Cell do
   end
 
   @impl true
+  def handle_call(:stop_repo, _from, state) do
+    shutdown_repo(state.repo_pid)
+
+    # Cleared so terminate/2 and any second call are no-ops rather than a call
+    # against a dead supervisor.
+    {:reply, :ok, %{state | repo_pid: nil}}
+  end
+
+  def handle_call(:repo_stopped?, _from, state), do: {:reply, is_nil(state.repo_pid), state}
+
   def handle_call(:repo_pid, _from, state), do: {:reply, state.repo_pid, state}
 
   def handle_call(:info, _from, state) do
@@ -207,6 +220,25 @@ defmodule AshCell.Cell do
     %{state | last_ship_at: System.monotonic_time(:millisecond), ships: state.ships + 1}
   end
 
+  @doc """
+  Stops this cell's repo and waits for it, leaving the cell process alive.
+
+  For callers that are about to rewrite the database file. `repo.start_link/1` runs
+  in `init/1`, so the repo supervisor is linked to this process and shuts down on
+  its own -- but asynchronously, after this process is gone and
+  `DynamicSupervisor.terminate_child/2` has already returned to
+  `AshCell.Manager.close/2`. A caller that rewrites the file the instant close
+  returns can therefore be overwritten by the dying connection: SQLite checkpoints
+  the WAL into the `.db` as the last connection closes, so the pages of the database
+  being replaced land on top of the replacement, and the write reports success over
+  a database missing everything it just restored.
+
+  Not done on every close. The checkpoint is real work, and paying it inline made
+  the suite about three times slower -- so ordinary closes and evictions still let
+  the repo shut down behind them, and only the rewrite path waits.
+  """
+  def stop_repo(pid), do: GenServer.call(pid, :stop_repo, 30_000)
+
   @impl true
   def terminate(_reason, state) do
     # Deregisters synchronously, which the registry's own cleanup does not.
@@ -223,6 +255,15 @@ defmodule AshCell.Cell do
   catch
     # Terminating is not a place to raise. If the registry is already gone -- fleet
     # shutdown tears it down in the same breath -- there is nothing to deregister.
+    _kind, _reason -> :ok
+  end
+
+  defp shutdown_repo(nil), do: :ok
+
+  defp shutdown_repo(repo_pid) do
+    if Process.alive?(repo_pid), do: Supervisor.stop(repo_pid, :normal, 5_000)
+    :ok
+  catch
     _kind, _reason -> :ok
   end
 

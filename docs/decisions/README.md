@@ -37,6 +37,7 @@ live in [`../design/`](../design), and reference these.
 | [12](ADR-12-whole-file-snapshots-on-a-schedule.md) | Ship whole-file snapshots on a jittered schedule; defer per-commit durability | accepted |
 | [14](ADR-14-bounded-read-staleness.md) | Bound read staleness on the monotonic clock, and expose it as explicit modes | accepted |
 | [20](ADR-20-choose-a-durability-level.md) | Choose SQLite's durability level (`synchronous`) | **proposed — open** |
+| [21](ADR-21-close-does-not-await-the-connection.md) | Close does not wait for the connection; the rewrite path asks it to | accepted |
 
 ## Performance, encryption, integration
 
@@ -76,4 +77,6 @@ false. Do not reintroduce the superseded position:
 not yet worth an ADR each: every deploy migrates every cell; reads are not fenced the way writes
 are; background jobs have no request boundary to route at; thundering herd on node loss;
 `ObjectStore.list/2` has no S3 pagination, so it breaks past 1000 snapshots; snapshot and restore
-are non-atomic whole-file operations; `assert_bound!/0` cannot detect a tenant mismatch.
+are non-atomic whole-file operations; `assert_bound!/0` cannot detect a tenant mismatch; and a
+rewrite path that forgets `await_repo?: true` gets [ADR-21](ADR-21-close-does-not-await-the-connection.md)'s
+bug back silently.

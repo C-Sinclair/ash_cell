@@ -63,6 +63,42 @@ defmodule AshCell.RegressionTest do
       assert ["Recovered"] = AshCell.with_tenant("acme", fn -> read_bound() end)
     end
 
+    # Killing the cell repeatedly is the shape that failed in CI and passed locally.
+    # A single kill usually resolves before the next lookup on an idle machine; the
+    # registry's DOWN is what has to be waited for, and one iteration rarely proves
+    # the wait exists.
+    test "binding recovers from a killed cell every time, not just when the timing is kind" do
+      write("acme", "Recovered")
+
+      for _ <- 1..25 do
+        {:ok, pid} = AshCell.Manager.ensure_started("acme")
+        Process.exit(pid, :kill)
+
+        assert ["Recovered"] = AshCell.with_tenant("acme", fn -> read_bound() end)
+      end
+    end
+
+    # `bind/1` documents its error tuples. `with_tenant/2` used to hand one straight
+    # to a private clause that only matched `{:ok, previous}`, so a refused bind
+    # arrived as a FunctionClauseError naming `AshCell.with_bound/2` -- a function
+    # the caller has never heard of -- with the actual reason buried in the argument
+    # dump. The reason belongs in the message.
+    test "with_tenant raises a legible error when the cell cannot be bound" do
+      # Sealing is the public way to make the manager refuse a cell it does not
+      # already hold, which is enough to exercise the error path.
+      # No unseal afterwards: the fleet is torn down with the test, so the seal goes
+      # with it, and an on_exit callback would outlive the manager it calls.
+      AshCell.Manager.seal()
+
+      error =
+        assert_raise ArgumentError, fn ->
+          AshCell.with_tenant("never-started", fn -> flunk("must not run the body") end)
+        end
+
+      assert error.message =~ "could not bind the cell"
+      assert error.message =~ "draining"
+    end
+
     test "concurrent binders all survive repeated eviction" do
       write("acme", "Row")
 

@@ -44,7 +44,7 @@ defmodule AshCell.Manager do
   cell keeps serving while it drains, so in-flight work can finish; only *new*
   activations are refused.
   """
-  def ensure_started(cell_key), do: ensure_started(cell_key, 2)
+  def ensure_started(cell_key), do: ensure_started(cell_key, 50)
 
   defp ensure_started(cell_key, attempts_left) do
     case AshCell.Registry.lookup(cell_key) do
@@ -69,8 +69,24 @@ defmodule AshCell.Manager do
   # Still a check-then-use, so it narrows the window rather than closing it --
   # nothing can promise a pid stays alive after being handed over. What it does
   # remove is the common case, where the process is already dead when we look.
+  #
+  # The sleep is the point. Registration is held via a `:via` tuple, so a cell that
+  # dies without running `terminate/2` -- a crash, a kill -- stays in the registry
+  # until the registry processes its DOWN. Retrying without yielding just reads the
+  # same corpse a few microseconds later: the previous version spun three times
+  # inside one scheduler slice and then gave up with `{:error, :cell_died}`, which
+  # surfaced to callers as `:cell_unavailable` for a cell that was about to be
+  # perfectly startable. It looked fine on an idle laptop, where the DOWN often
+  # landed first, and failed on a loaded CI runner, where it did not.
+  #
+  # One millisecond at a time, up to 50, so the bound is ~50ms -- long enough for a
+  # DOWN under load, short enough that a genuinely dead cell still fails promptly.
   defp retry_start(_cell_key, 0), do: {:error, :cell_died}
-  defp retry_start(cell_key, attempts_left), do: ensure_started(cell_key, attempts_left - 1)
+
+  defp retry_start(cell_key, attempts_left) do
+    Process.sleep(1)
+    ensure_started(cell_key, attempts_left - 1)
+  end
 
   @doc """
   Stops this node taking on new cells.
@@ -147,6 +163,11 @@ defmodule AshCell.Manager do
   crash into an ordinary pause.
 
   Pass `force: true` to close regardless, and expect bound callers to fail.
+
+  Pass `await_repo?: true` if you are about to rewrite the database file. Without it
+  this returns while the cell's SQLite connection is still shutting down, and the
+  dying connection's checkpoint can land on top of your write. See
+  `AshCell.Cell.stop_repo/1` for why it is not the default.
   """
   def close(cell_key, opts \\ []) do
     AshCell.Registry.begin_closing(cell_key)
@@ -155,6 +176,8 @@ defmodule AshCell.Manager do
       unless Keyword.get(opts, :force, false) do
         AshCell.Drain.await_quiescence(cell_key, Keyword.get(opts, :grace_ms, 1_000))
       end
+
+      if Keyword.get(opts, :await_repo?, false), do: await_repo_stopped(cell_key)
 
       GenServer.call(__MODULE__, {:close, cell_key})
     after
@@ -278,9 +301,18 @@ defmodule AshCell.Manager do
   end
 
   def handle_call({:start, cell_key}, _from, state) do
+    # `Process.alive?` for the same reason `ensure_started/1` checks: a registry hit
+    # is not proof of life, and handing back a corpse from here is worse, because a
+    # caller that reached the manager has already been told the fast path failed.
+    # Falling through to the start attempt is safe -- `start_child` answers
+    # `{:error, {:already_started, pid}}` if the entry is still held.
     case AshCell.Registry.lookup(cell_key) do
-      {:ok, pid} ->
-        {:reply, {:ok, pid}, mark(state, cell_key)}
+      {:ok, pid} when is_pid(pid) ->
+        if Process.alive?(pid) do
+          {:reply, {:ok, pid}, mark(state, cell_key)}
+        else
+          {:reply, {:error, :cell_died}, state}
+        end
 
       :error ->
         state = evict_if_needed(state)
@@ -405,6 +437,17 @@ defmodule AshCell.Manager do
 
   @impl true
   def handle_cast({:touch, cell_key}, state), do: {:noreply, mark(state, cell_key)}
+
+  # Best effort by design: if the cell is already gone there is no connection left
+  # to wait for, which is the state the caller wanted anyway.
+  defp await_repo_stopped(cell_key) do
+    case AshCell.Registry.lookup(cell_key) do
+      {:ok, pid} -> if Process.alive?(pid), do: AshCell.Cell.stop_repo(pid)
+      :error -> :ok
+    end
+  catch
+    _kind, _reason -> :ok
+  end
 
   defp stop_cell(cell_key) do
     case AshCell.Registry.lookup(cell_key) do
