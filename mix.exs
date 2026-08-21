@@ -105,8 +105,7 @@ defmodule AshCell.MixProject do
       {:req, "~> 0.5"},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:usage_rules, "~> 0.1", only: [:dev, :test], runtime: false}
+      {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -123,12 +122,7 @@ defmodule AshCell.MixProject do
       # Fails loudly if exqlite was compiled without SQLCipher — a missing
       # EXQLITE_USE_SYSTEM at dep-compile time silently yields plain SQLite
       # that cannot open an encrypted database.
-      "cipher.check": &AshCell.MixProject.cipher_check/1,
-      # usage-rules.md is assembled from the library's own module docs plus the
-      # hand-written rules, so it cannot drift from the API it describes.
-      "usage_rules.sync": [
-        "usage_rules.sync usage-rules.md --all --link-to-folder deps --yes"
-      ]
+      "cipher.check": &AshCell.MixProject.cipher_check/1
     ]
   end
 
