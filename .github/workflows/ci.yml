@@ -54,6 +54,38 @@ jobs:
 
       - run: mix test
 
+  links:
+    name: Markdown links
+    runs-on: ubuntu-latest
+
+    # The ADRs cross-link each other heavily, and the whole point of an index is that its links
+    # work -- a rename that quietly breaks them leaves a set of docs that looks fine and cannot
+    # be navigated. Local links only: link_verifier skips http(s) by design, so this proves paths
+    # resolve, not that the web is up.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install link_verifier
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download --repo C-Sinclair/link_verifier \
+            --pattern 'link_verifier-linux-x86_64' \
+            --output /usr/local/bin/link_verifier
+          chmod +x /usr/local/bin/link_verifier
+          link_verifier --version
+
+      # `doc/` is generated ex_doc output and gitignored; `cli/target` is a Rust build directory.
+      #
+      # The find is not redundant. link_verifier skips hidden directories when walking a tree, and
+      # refuses one as an explicit target, so `.github` markdown is invisible to the plain scan.
+      # Naming those files is the only way to cover them.
+      - name: Check links
+        run: |
+          link_verifier . $(find .github -name '*.md') \
+            -x '/deps/' -x '/_build/' -x '/node_modules/' \
+            -x '/doc/' -x 'cli/target/'
+
   cipher:
     name: SQLCipher
     runs-on: ubuntu-latest
