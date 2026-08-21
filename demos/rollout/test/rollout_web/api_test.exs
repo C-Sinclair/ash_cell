@@ -97,6 +97,80 @@ defmodule RolloutWeb.ApiTest do
     end
   end
 
+  describe "POST /v1/check/batch" do
+    test "resolves every check-in in the batch and reports the cost", %{
+      conn: conn,
+      channel: channel
+    } do
+      {:ok, release} = Control.cut(channel, "1.0.0", cut_artifacts("1.0.0"))
+      {:ok, _} = Control.promote(channel, release.id)
+
+      assert %{"count" => 500, "versions" => %{"1.0.0" => 500}, "elapsed_us" => elapsed} =
+               conn
+               |> post(~p"/v1/check/batch", %{
+                 "channel" => channel,
+                 "count" => 500,
+                 "runtime" => 142
+               })
+               |> json_response(200)
+
+      assert elapsed > 0
+    end
+
+    test "a staged rollout shows up as a mix, not a guess", %{conn: conn, channel: channel} do
+      {:ok, release} = Control.cut(channel, "1.0.0", cut_artifacts("1.0.0"))
+      {:ok, _} = Control.promote(channel, release.id, rollout: 25)
+
+      assert %{"versions" => versions, "count" => 1_000} =
+               conn
+               |> post(~p"/v1/check/batch", %{
+                 "channel" => channel,
+                 "count" => 1_000,
+                 "runtime" => 142
+               })
+               |> json_response(200)
+
+      # Hashed per device, so this is a distribution rather than a quota.
+      assert_in_delta versions["1.0.0"] / 1_000, 0.25, 0.05
+      assert versions["1.0.0"] + versions["up_to_date"] == 1_000
+    end
+
+    test "the batch size is capped", %{conn: conn, channel: channel} do
+      assert %{"count" => 2_000} =
+               conn
+               |> post(~p"/v1/check/batch", %{
+                 "channel" => channel,
+                 "count" => 500_000,
+                 "runtime" => 142
+               })
+               |> json_response(200)
+    end
+
+    test "offset keeps device ids distinct across batches", %{conn: conn, channel: channel} do
+      {:ok, release} = Control.cut(channel, "1.0.0", cut_artifacts("1.0.0"))
+      {:ok, _} = Control.promote(channel, release.id, rollout: 50)
+
+      first =
+        conn
+        |> post(~p"/v1/check/batch", %{"channel" => channel, "count" => 400, "runtime" => 142})
+        |> json_response(200)
+
+      second =
+        conn
+        |> post(~p"/v1/check/batch", %{
+          "channel" => channel,
+          "count" => 400,
+          "offset" => 400,
+          "runtime" => 142
+        })
+        |> json_response(200)
+
+      # Different devices, so the split differs -- an identical split would mean the
+      # offset was ignored and the same 400 phones were asked twice.
+      refute first["versions"] == second["versions"]
+    end
+  end
+
   describe "the operator loop" do
     test "cut, promote, check in, roll back, check in", %{conn: conn, channel: channel} do
       # Cut. Inert until promoted, which the next assertion is the whole point of.

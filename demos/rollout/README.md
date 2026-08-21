@@ -12,7 +12,7 @@ week.
     mix phx.server                 # port 4020
 
 The design argument, the trade-offs, and the open questions are in
-[`docs/prd.md`](docs/prd.md). This file is what the code currently proves.
+[`docs/design.md`](docs/design.md). This file is what the code currently proves.
 
 ## The visualiser
 
@@ -33,16 +33,40 @@ Below it, the blob lane — deliberately dumber, because that is the point being
 
     client ── bundle-1.2.1.js ─▶ object store
 
-Every dot is a real `POST /v1/check`, and the two buttons call the real `upgrade` and
-`rollback` routes on that channel's cell. So the version on the lane changes for
-every check-in *after* the write commits, and nothing on the page is simulated. Each
-row also shows whether that channel's manifest is currently `cached` or `cold` — press
-either button and it reads `cold` until the next check-in warms it.
+The rate selector runs from 30 to 6,000 check-ins a second, and the stats line under
+the lanes reports what those resolves actually cost — around **0.34 µs each**, so a
+few million a second from one node. Every dot is one real resolve; the two buttons
+call the real `upgrade` and `rollback` routes. Nothing on the page is simulated.
+
+Three things it took a couple of attempts to get right, all worth knowing if you
+change it:
+
+**Travel time is a visual constant.** A cached resolve is well under a microsecond, so
+animating the real duration draws nothing at all — the first version turned dots
+around the instant the response landed, which looked like they never left. The
+outbound leg is a fixed 1.5s and the honest number lives in the stats line instead.
+
+**Requests are batched, and the drawing is not.** A browser holds about six
+connections per host, so issuing thousands of check-ins a second one at a time
+measures the connection pool rather than the cell. `POST /v1/check/batch` performs N
+real resolves per request; results land in a reservoir and the animation frame emits
+from it on a time accumulator. Without that separation the lane pulses once per
+batch, which reads as bursts of traffic rather than as a fleet checking in.
+
+**Batches return counts per version, so the reservoir is shuffled.** Emitting in
+order draws every served dot and then every skipped one, and beta's 25% looks like
+alternating blocks instead of a mix.
+
+Each row also shows whether that channel's manifest is `cached` or `cold` — press
+either button and it reads `cold` until the next check-in warms it, which is the read
+cache being invalidated by its own writer, on screen.
 
 The page is one template with inline CSS and JS and no build step, because the app is
 scaffolded without an asset pipeline. That rules out LiveView, which needs a JS
 bundle — and it is the better answer anyway: with `fetch` the animation is driven by
-the requests themselves rather than by a server telling the page what to draw.
+the requests themselves rather than by a server telling the page what to draw. The
+dots are drawn on a canvas, because at these rates one DOM node per request puts the
+browser in layout instead of drawing.
 
 ## Driving it
 
@@ -85,6 +109,7 @@ share is a distribution and a device gets the same answer every time.
     GET  /v1/channels                    every channel, its pointer, its log
     GET  /v1/channels/*channel           one channel, and whether its manifest is cached
     POST /v1/check                       the device path -- writes nothing
+    POST /v1/check/batch                 N real resolves in one request, and what they cost
     POST /v1/releases/*channel           cut a release (inert)
     POST /v1/promote/*channel            point the channel at one
     POST /v1/upgrade/*channel            cut the next patch version and promote it
@@ -122,7 +147,7 @@ one that never serves a release the channel has moved off.
 | The same loop holds over HTTP, including a slashed channel name and a version-string runtime | `test/rollout_web/api_test.exs` |
 | The visualiser drives the real API rather than a mock | `test/rollout_web/page_test.exs` |
 
-55 tests: 32 in `test/rollout/`, 20 over the API, 3 on the page.
+59 tests: 32 in `test/rollout/`, 24 over the API, 3 on the page.
 
 ## Measured
 
@@ -170,7 +195,7 @@ improve above SQLite, not inside it.
 Named plainly, because the demo is only useful if the edges are.
 
 - **Single node.** Everything above is one node's read path. The `:replicated` and
-  `:leased` strategies in [`docs/prd.md`](docs/prd.md) — local reads on many nodes,
+  `:leased` strategies in [`docs/design.md`](docs/design.md) — local reads on many nodes,
   and revoke-before-commit to keep them linearizable — are **designed and not
   built**. The write-availability cost of `:leased` (a rollback stalls for the lease
   TTL if a reader node is unreachable) is the number that work exists to produce, and
@@ -180,7 +205,7 @@ Named plainly, because the demo is only useful if the edges are.
   The GC *argument* — that a single writer makes "unreferenced" a query rather than a
   distributed protocol — is tested. Wiring it to `AshCell.ObjectStore` is not done,
   and the blob lane in the visualiser animates a fetch that does not happen.
-- **No install telemetry.** `docs/prd.md` argues it belongs in a separate cell and
+- **No install telemetry.** `docs/design.md` argues it belongs in a separate cell and
   that co-locating it would destroy the read cache. That is an argument, not a
   measurement; the counterexample benchmark is unwritten.
 - **Fencing protects the pointer write, not the read.** Under a future `:replicated`

@@ -1,8 +1,11 @@
-<!-- The visualiser. Every dot is a real POST /v1/check; every button is a real write.
+<!-- The visualiser.
 
-     A whole document rather than a layout fragment: this page is rendered with
-     layouts off, because the scaffolded layout links an asset bundle the app has no
-     pipeline to build. -->
+     Rendered with layouts off, so this is a whole document: the scaffolded layout
+     links an asset bundle the app has no pipeline to build.
+
+     Canvas rather than DOM nodes, because at hundreds of check-ins a second one
+     element per request is thousands of nodes being created and animated, and the
+     browser spends its time in layout instead of drawing. -->
 <!DOCTYPE html>
 <html lang="en">
   <head>
@@ -17,9 +20,6 @@
         --line: #232838;
         --text: #e6e9f0;
         --dim: #7d859b;
-        --prod: #4ade80;
-        --beta: #60a5fa;
-        --canary: #fbbf24;
       }
 
       * { box-sizing: border-box; }
@@ -28,120 +28,27 @@
         margin: 0;
         background: var(--bg);
         color: var(--text);
-        font: 14px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
+        font: 13px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace;
       }
 
       header {
-        padding: 20px 28px 14px;
+        padding: 18px 26px 14px;
         border-bottom: 1px solid var(--line);
         display: flex;
-        align-items: baseline;
-        gap: 18px;
+        align-items: center;
+        gap: 20px;
         flex-wrap: wrap;
       }
 
-      h1 { font-size: 15px; margin: 0; font-weight: 600; letter-spacing: 0.02em; }
-      header p { margin: 0; color: var(--dim); font-size: 12px; }
+      h1 { font-size: 14px; margin: 0; font-weight: 600; }
+      header .sub { color: var(--dim); font-size: 12px; flex: 1 1 320px; }
 
-      main { padding: 22px 28px 40px; display: grid; gap: 22px; }
+      .rate { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--dim); }
 
-      .panel {
-        background: var(--panel);
-        border: 1px solid var(--line);
-        border-radius: 10px;
-        padding: 18px 20px;
-      }
-
-      .panel h2 {
-        font-size: 12px;
-        text-transform: uppercase;
-        letter-spacing: 0.09em;
-        color: var(--dim);
-        margin: 0 0 4px;
-        font-weight: 600;
-      }
-
-      .panel .note { color: var(--dim); font-size: 12px; margin: 0 0 16px; }
-
-      .channel {
-        display: grid;
-        grid-template-columns: 168px 1fr 200px;
-        align-items: center;
-        gap: 14px;
-        padding: 10px 0;
-        border-top: 1px solid var(--line);
-      }
-
-      .channel:first-of-type { border-top: 0; }
-
-      .name { display: flex; align-items: center; gap: 8px; font-size: 13px; }
-      .swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; }
-
-      /* The lane a request travels down. Client on the left, server on the right. */
-      .lane {
-        position: relative;
-        height: 46px;
-        border-left: 2px solid var(--line);
-        border-right: 2px solid var(--line);
-      }
-
-      .lane .edge {
-        position: absolute;
-        top: -14px;
-        font-size: 10px;
-        color: var(--dim);
-        letter-spacing: 0.06em;
-      }
-
-      .lane .edge.left { left: 4px; }
-      .lane .edge.right { right: 4px; }
-
-      /* One in-flight request. Travels right, turns around at the server, comes back
-         carrying the version it was told. */
-      .dot {
-        position: absolute;
-        top: 50%;
-        left: 0;
-        width: 9px;
-        height: 9px;
-        margin-top: -4.5px;
-        border-radius: 50%;
-        animation: out 900ms cubic-bezier(0.4, 0, 0.6, 1) forwards;
-      }
-
-      .dot.back { animation: back 900ms cubic-bezier(0.4, 0, 0.6, 1) forwards; }
-
-      .dot .label {
-        position: absolute;
-        left: 14px;
-        top: -6px;
-        white-space: nowrap;
-        font-size: 11px;
-        opacity: 0;
-      }
-
-      .dot.back .label { opacity: 1; }
-
-      @keyframes out {
-        from { transform: translateX(0); }
-        to { transform: translateX(calc(100% * var(--travel))); }
-      }
-
-      @keyframes back {
-        from { transform: translateX(calc(100% * var(--travel))); opacity: 1; }
-        to { transform: translateX(0); opacity: 0; }
-      }
-
-      .state { text-align: right; font-size: 12px; }
-      .state .version { font-size: 16px; font-weight: 600; }
-      .state .meta { color: var(--dim); font-size: 11px; }
-
-      .controls { display: flex; gap: 8px; justify-content: flex-end; margin-top: 6px; }
-
-      button {
+      select, button {
         font: inherit;
         font-size: 12px;
-        padding: 5px 11px;
+        padding: 5px 10px;
         border-radius: 6px;
         border: 1px solid var(--line);
         background: #1a1f2b;
@@ -149,57 +56,77 @@
         cursor: pointer;
       }
 
-      button:hover { border-color: #39415a; }
+      button:hover, select:hover { border-color: #39415a; }
       button:disabled { opacity: 0.4; cursor: default; }
 
-      /* The blob lane. Deliberately dumber than the one above: a path, a filename, and
-         nothing in the middle -- which is the point being made. */
-      .blobs { position: relative; height: 128px; }
+      main { padding: 20px 26px 36px; display: grid; gap: 20px; }
 
-      .blob-lane {
-        position: absolute;
-        left: 120px;
-        right: 120px;
-        height: 1px;
-        background: var(--line);
+      .panel {
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 16px 18px;
       }
 
-      .blob-endpoint {
-        position: absolute;
-        top: -9px;
+      .panel h2 {
         font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: 0.09em;
         color: var(--dim);
+        margin: 0 0 4px;
       }
 
-      .blob-endpoint.left { left: -108px; }
-      .blob-endpoint.right { right: -104px; }
+      .panel .note { color: var(--dim); font-size: 12px; margin: 0 0 14px; }
 
-      .packet {
-        position: absolute;
-        top: -9px;
-        left: 0;
+      .stage { display: grid; grid-template-columns: 1fr 216px; gap: 18px; align-items: start; }
+
+      canvas { width: 100%; display: block; }
+
+      .rows { display: grid; gap: 10px; }
+
+      .row {
+        border: 1px solid var(--line);
+        border-radius: 8px;
+        padding: 9px 11px;
+      }
+
+      .row .head { display: flex; align-items: center; gap: 7px; font-size: 12px; }
+      .swatch { width: 9px; height: 9px; border-radius: 50%; flex: none; }
+      .row .version { font-size: 17px; font-weight: 600; margin: 4px 0 1px; }
+      .row .meta { color: var(--dim); font-size: 11px; }
+      .row .controls { display: flex; gap: 6px; margin-top: 8px; }
+      .row .controls button { flex: 1; padding: 4px 0; }
+
+      .stats {
+        display: flex;
+        gap: 24px;
+        flex-wrap: wrap;
+        color: var(--dim);
         font-size: 11px;
-        white-space: nowrap;
-        animation: ship 1400ms linear forwards;
+        margin-top: 12px;
+        padding-top: 12px;
+        border-top: 1px solid var(--line);
       }
 
-      @keyframes ship {
-        from { transform: translateX(0); opacity: 0; }
-        12%  { opacity: 1; }
-        88%  { opacity: 1; }
-        to   { transform: translateX(calc(100% * var(--travel))); opacity: 0; }
-      }
-
-      .legend { color: var(--dim); font-size: 11px; margin-top: 10px; }
-      .counts { color: var(--dim); font-size: 11px; }
+      .stats b { color: var(--text); font-weight: 600; }
     </style>
   </head>
   <body>
     <header>
       <h1>rollout — over-the-air updates on AshCell</h1>
-      <p>
-        every dot is a real <code>POST /v1/check</code>; every button is a real write to that channel's cell
+      <p class="sub">
+        every dot is one real resolve against that channel's cell; both buttons are real writes
       </p>
+      <label class="rate">
+        check-ins/sec
+        <select id="rate">
+          <option value="30">30</option>
+          <option value="150">150</option>
+          <option value="600" selected>600</option>
+          <option value="1500">1,500</option>
+          <option value="6000">6,000</option>
+        </select>
+      </label>
     </header>
 
     <main>
@@ -208,22 +135,20 @@
         <p class="note">
           A device says what it is and what it already has. The channel answers from its
           pointer — cached in <code>persistent_term</code>, invalidated by its own writer —
-          and writes nothing.
+          and writes nothing. Dots travel out, turn at the cell, and come back carrying the
+          version they were told; hollow means <code>up_to_date</code>, either already
+          current or outside a staged rollout.
         </p>
 
-        <div id="channels">
-          <div :for={channel <- @channels} class="channel" data-channel={channel}>
-            <div class="name">
-              <span class="swatch" data-swatch></span>
-              <span>{channel}</span>
-            </div>
+        <div class="stage">
+          <canvas id="checkins" height="330"></canvas>
 
-            <div class="lane">
-              <span class="edge left">client</span>
-              <span class="edge right">channel cell</span>
-            </div>
-
-            <div class="state">
+          <div class="rows" id="rows">
+            <div :for={channel <- @channels} class="row" data-channel={channel}>
+              <div class="head">
+                <span class="swatch" data-swatch></span>
+                <span>{channel}</span>
+              </div>
               <div class="version" data-version>—</div>
               <div class="meta" data-meta></div>
               <div class="controls">
@@ -234,188 +159,411 @@
           </div>
         </div>
 
-        <p class="legend">
-          A dot travels out, turns around at the cell, and comes back carrying the version
-          it was told. A hollow dot was told <code>up_to_date</code> — either it is already
-          current, or it is outside a staged rollout.
-        </p>
+        <div class="stats">
+          <span>issued <b id="issued">0</b></span>
+          <span>measured <b id="throughput">—</b></span>
+          <span>per resolve <b id="per-resolve">—</b></span>
+          <span id="sampling"></span>
+        </div>
       </section>
 
       <section class="panel">
         <h2>Blob fetch</h2>
         <p class="note">
-          What a device does once it has been told a version. Straight to the object store,
-          no cell involved — the pointer graph is a few KB and the payload is everything
-          else, which is the split the whole design rests on.
+          What a device does once it has been told a version: straight to the object store,
+          no cell involved. Deliberately dumber than the lane above, because that asymmetry
+          is the whole design — a few KB of pointer graph that must serialise, and a mass of
+          immutable content-addressed bytes that wants no database at all.
         </p>
 
-        <div class="blobs">
-          <div class="blob-lane" id="blob-lane">
-            <span class="blob-endpoint left">client</span>
-            <span class="blob-endpoint right">object store</span>
-          </div>
-        </div>
-
-        <p class="counts" id="counts"></p>
+        <canvas id="blobs" height="150"></canvas>
+        <p class="note" style="margin: 10px 0 0" id="blob-note"></p>
       </section>
     </main>
 
     <script>
-      // Colour per channel. Order matches the seed: prod, beta, canary.
-      const COLOURS = ["--prod", "--beta", "--canary"];
+      const PALETTE = ["#4ade80", "#60a5fa", "#fbbf24"];
 
-      const rows = [...document.querySelectorAll(".channel")].map((row, index) => {
-        const colour = getComputedStyle(document.documentElement)
-          .getPropertyValue(COLOURS[index % COLOURS.length])
-          .trim();
+      // Travel times are visual constants, not measurements. A resolve takes well under a
+      // microsecond from cache, so animating the real duration would draw nothing at all --
+      // the honest number is in the stats line instead.
+      const OUT_MS = 1500;
+      const BACK_MS = 1300;
+      const SHIP_MS = 2400;
 
+      // How far ahead of the dots the requests run. Batches arrive in clumps -- a fetch
+      // is milliseconds and jittery -- so results land in a reservoir and the draw loop
+      // emits from it at a steady rate. Without that the lane pulses once per batch,
+      // which reads as bursts of traffic rather than as a fleet checking in.
+      const RESERVOIR_MS = 600;
+
+      // Requests are all issued; only this many dots per lane are drawn. Past it the lane
+      // is a solid band and more dots add nothing but frame time.
+      const MAX_DOTS_PER_LANE = 70;
+      const BLOB_TRACKS = 5;
+      const MAX_PACKETS = 22;
+
+      const channels = [...document.querySelectorAll(".row")].map((row, index) => {
+        const colour = PALETTE[index % PALETTE.length];
         row.querySelector("[data-swatch]").style.background = colour;
 
         return {
-          channel: row.dataset.channel,
+          name: row.dataset.channel,
           colour,
-          lane: row.querySelector(".lane"),
+          row,
           version: row.querySelector("[data-version]"),
           meta: row.querySelector("[data-meta]"),
           buttons: [...row.querySelectorAll("button")],
-          row,
+          dots: [],
+          pool: [],
+          carry: 0,
+          offset: 0,
+          inFlight: false,
         };
       });
 
-      const blobLane = document.getElementById("blob-lane");
-      const counts = document.getElementById("counts");
-      const tally = { update: 0, up_to_date: 0, no_release: 0 };
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const checkins = setup(document.getElementById("checkins"));
+      const blobs = setup(document.getElementById("blobs"));
+      const packets = [];
 
-      let device = 0;
+      const totals = { issued: 0, elapsed: 0, resolved: 0, sampled: 0, drawn: 0 };
 
-      // A dot is spawned when the request goes out and turned around when it lands, so
-      // its outbound travel really is the request being in flight.
-      function spawn(row) {
-        const dot = document.createElement("div");
-        dot.className = "dot";
-        dot.style.setProperty("--travel", laneTravel(row.lane));
-        dot.style.background = row.colour;
+      function setup(canvas) {
+        const context = canvas.getContext("2d");
 
-        const label = document.createElement("span");
-        label.className = "label";
-        label.style.color = row.colour;
-        dot.appendChild(label);
-
-        row.lane.appendChild(dot);
-        return { dot, label };
-      }
-
-      // The lane is wider than the dot, so the dot has to travel (lane - dot) / dot
-      // times its own width to reach the far edge.
-      function laneTravel(lane) {
-        return (lane.clientWidth - 13) / 9;
-      }
-
-      function turnAround({ dot, label }, text, filled) {
-        label.textContent = text;
-        if (!filled) {
-          dot.style.background = "transparent";
-          dot.style.boxShadow = "inset 0 0 0 1.5px currentColor";
-          dot.style.color = dot.style.color || "";
+        function resize() {
+          const width = canvas.clientWidth;
+          canvas.width = width * dpr;
+          canvas.height = canvas.getAttribute("height") * dpr;
+          context.setTransform(dpr, 0, 0, dpr, 0, 0);
         }
-        dot.classList.add("back");
-        setTimeout(() => dot.remove(), 950);
+
+        resize();
+        window.addEventListener("resize", resize);
+        return { canvas, context, width: () => canvas.clientWidth, height: () => +canvas.getAttribute("height") };
       }
 
-      function ship(row, filename) {
-        const packet = document.createElement("div");
-        packet.className = "packet";
-        packet.style.color = row.colour;
-        packet.style.setProperty("--travel", "1");
-        packet.textContent = "── " + filename + " ─▶";
-        blobLane.appendChild(packet);
-        setTimeout(() => packet.remove(), 1450);
+      // --- issuing real work ------------------------------------------------------
+
+      function rate() {
+        return +document.getElementById("rate").value;
       }
 
-      async function checkIn(row) {
-        const flight = spawn(row);
-        device += 1;
+      function perChannelRate() {
+      return rate() / channels.length;
+      }
 
-        try {
-          const response = await fetch("/v1/check", {
+      // Re-issued the moment the previous batch lands rather than on a timer, so a slow
+      // batch delays the next request instead of being skipped and then made up for in
+      // a burst.
+      async function issueLoop(channel) {
+      for (;;) {
+      const shortfall =
+      Math.ceil((perChannelRate() * RESERVOIR_MS) / 1000) - channel.pool.length;
+
+      if (shortfall > 0) {
+      await issue(channel, shortfall);
+      } else {
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      }
+      }
+      }
+
+      async function issue(channel, count) {
+      channel.inFlight = true;
+
+      try {
+          const response = await fetch("/v1/check/batch", {
             method: "POST",
             headers: { "content-type": "application/json" },
             body: JSON.stringify({
-              channel: row.channel,
-              device_id: "phone-" + device,
+              channel: channel.name,
+              count,
+              offset: channel.offset,
               platform: "ios",
               arch: "arm64",
               runtime: 142,
-              current_release: null,
             }),
           });
 
           const body = await response.json();
-          tally[body.status] = (tally[body.status] || 0) + 1;
+          channel.offset += body.count;
 
-          if (body.status === "update") {
-            turnAround(flight, body.version, true);
-            const bundle = body.artifacts.find((a) => a.kind === "bundle");
-            if (bundle) ship(row, "bundle-" + body.version + ".js");
-          } else if (body.status === "up_to_date") {
-            turnAround(flight, "up to date", false);
-          } else {
-            turnAround(flight, body.status.replace("_", " "), false);
-          }
+          totals.issued += body.count;
+          totals.elapsed += body.elapsed_us;
+          totals.resolved += body.count;
 
-          render();
+          fill(channel, body.versions);
         } catch (error) {
-          turnAround(flight, "error", false);
-        }
-      }
-
-      function render() {
-        counts.textContent =
-          tally.update + " served · " + tally.up_to_date + " up to date" +
-          (tally.no_release ? " · " + tally.no_release + " no release" : "");
-      }
-
-      async function refresh(row) {
-        const response = await fetch("/v1/channels/" + row.channel);
-        const body = await response.json();
-
-        row.version.textContent = body.version || "—";
-        row.version.style.color = row.colour;
-        row.meta.textContent =
-          body.rollout + "% · " + (body.cached ? "cached" : "cold") +
-          (body.history.length ? " · " + body.history[0].kind : "");
-      }
-
-      async function act(row, action) {
-        row.buttons.forEach((b) => (b.disabled = true));
-
-        try {
-          await fetch("/v1/" + action + "/" + row.channel, {
-            method: "POST",
-            headers: { "content-type": "application/json" },
-            body: JSON.stringify({ reason: action + " from the console" }),
-          });
-          await refresh(row);
+          // A failed batch is left out of the stats rather than counted as work done.
         } finally {
-          row.buttons.forEach((b) => (b.disabled = false));
+          channel.inFlight = false;
         }
       }
 
-      rows.forEach((row) => {
-        row.buttons.forEach((button) =>
-          button.addEventListener("click", () => act(row, button.dataset.action))
-        );
+      // The reservoir. One entry per resolve the batch actually performed, shuffled so
+      // that emitting them in order does not draw every served dot and then every
+      // skipped one -- a staged rollout has to read as an interleaved mix, which is
+      // what it is.
+      function fill(channel, versions) {
+      const entries = [];
 
-        refresh(row);
+      for (const [version, n] of Object.entries(versions)) {
+      for (let i = 0; i < n; i++) entries.push(version);
+      }
 
-        // Staggered per channel so the three lanes do not pulse in lockstep, which
-        // would read as one event rather than three independent fleets.
-        setInterval(() => checkIn(row), 700);
-        setTimeout(() => checkIn(row), Math.random() * 700);
+      for (let i = entries.length - 1; i > 0; i--) {
+      const j = Math.floor(Math.random() * (i + 1));
+      [entries[i], entries[j]] = [entries[j], entries[i]];
+      }
+
+      channel.pool.push(...entries);
+      }
+
+      let nextTrack = 0;
+
+      // Emitted on a time accumulator, so spacing is even to the frame no matter when
+      // batches landed. Every dot still corresponds to one resolve that really
+      // happened; what is smoothed is when it is drawn, not whether it occurred.
+      function emit(channel, dt) {
+      channel.carry += (perChannelRate() * dt) / 1000;
+
+      const due = Math.floor(channel.carry);
+      if (due <= 0) return;
+
+      channel.carry -= due;
+
+      const taking = Math.min(due, channel.pool.length);
+      if (taking === 0) return;
+
+      const batch = channel.pool.splice(0, taking);
+      const budget = Math.max(0, MAX_DOTS_PER_LANE - channel.dots.length);
+
+      // Over budget the lane is already a solid band, so the surplus is counted as
+      // sampled-but-not-drawn rather than drawn on top of itself. The stats line says
+      // which is happening.
+      const drawing = Math.min(taking, budget);
+      const step = taking / Math.max(drawing, 1);
+      const now = performance.now();
+
+      totals.sampled += taking;
+      totals.drawn += drawing;
+
+      for (let i = 0; i < drawing; i++) {
+      const version = batch[Math.floor(i * step)];
+      const served = version !== "up_to_date" && version !== "no_release";
+
+      channel.dots.push({
+      born: now,
+      label: served ? version : version === "up_to_date" ? "up to date" : "no release",
+      served,
+      y: 0.5 + (Math.random() - 0.5) * 0.72,
       });
 
-      setInterval(() => rows.forEach(refresh), 2000);
-      render();
+      if (served && packets.length < MAX_PACKETS && Math.random() < 0.05) {
+      packets.push({
+      born: now,
+      text: "── bundle-" + version + ".js ─▶",
+      colour: channel.colour,
+      track: nextTrack++ % BLOB_TRACKS,
+      });
+      }
+      }
+      }
+
+      // --- drawing ---------------------------------------------------------------
+
+      let lastFrame = performance.now();
+
+      function draw() {
+      const now = performance.now();
+
+      // Clamped, because a backgrounded tab resumes with a very large dt and would
+      // otherwise emit its whole reservoir on the first frame back.
+      const dt = Math.min(now - lastFrame, 100);
+      lastFrame = now;
+
+      channels.forEach((channel) => emit(channel, dt));
+
+      drawCheckins(now);
+      drawBlobs(now);
+      requestAnimationFrame(draw);
+      }
+
+      function drawCheckins(now) {
+        const { context, width, height } = checkins;
+        const w = width();
+        const h = height();
+        context.clearRect(0, 0, w, h);
+
+        const laneHeight = h / channels.length;
+        const left = 74;
+        const right = w - 96;
+
+        channels.forEach((channel, index) => {
+          const top = index * laneHeight;
+          const midline = top + laneHeight / 2;
+
+          context.strokeStyle = "#232838";
+          context.lineWidth = 1;
+
+          for (const x of [left, right]) {
+            context.beginPath();
+            context.moveTo(x, top + 12);
+            context.lineTo(x, top + laneHeight - 12);
+            context.stroke();
+          }
+
+          context.fillStyle = "#7d859b";
+          context.font = "10px ui-monospace, Menlo, monospace";
+          context.textAlign = "right";
+          context.fillText("client", left - 8, midline);
+          context.textAlign = "left";
+          context.fillText("cell", right + 8, midline);
+
+          channel.dots = channel.dots.filter((dot) => now - dot.born < OUT_MS + BACK_MS);
+
+          for (const dot of channel.dots) {
+            const age = now - dot.born;
+            if (age < 0) continue;
+
+            const outbound = age < OUT_MS;
+            const progress = outbound ? age / OUT_MS : 1 - (age - OUT_MS) / BACK_MS;
+            const x = left + (right - left) * progress;
+            const y = top + laneHeight * dot.y;
+
+            context.beginPath();
+            context.arc(x, y, 3.4, 0, Math.PI * 2);
+
+            if (dot.served) {
+              context.fillStyle = channel.colour;
+              context.fill();
+            } else {
+              context.strokeStyle = channel.colour;
+              context.lineWidth = 1.2;
+              context.stroke();
+            }
+
+            // Labelled only on the way back, because that is when the dot is carrying an
+            // answer rather than a question.
+            if (!outbound) {
+              context.globalAlpha = 0.75;
+              context.fillStyle = dot.served ? channel.colour : "#7d859b";
+              context.textAlign = "left";
+              context.font = "9px ui-monospace, Menlo, monospace";
+              context.fillText(dot.label, x + 6, y - 4);
+              context.globalAlpha = 1;
+            }
+          }
+        });
+      }
+
+      function drawBlobs(now) {
+        const { context, width, height } = blobs;
+        const w = width();
+        const h = height();
+        context.clearRect(0, 0, w, h);
+
+        const left = 74;
+        const right = w - 110;
+        const gap = h / (BLOB_TRACKS + 1);
+
+        context.strokeStyle = "#232838";
+        context.lineWidth = 1;
+
+        for (let track = 0; track < BLOB_TRACKS; track++) {
+          const y = gap * (track + 1);
+          context.beginPath();
+          context.moveTo(left, y);
+          context.lineTo(right, y);
+          context.stroke();
+        }
+
+        context.fillStyle = "#7d859b";
+        context.font = "10px ui-monospace, Menlo, monospace";
+        context.textAlign = "right";
+        context.fillText("client", left - 8, h / 2);
+        context.textAlign = "left";
+        context.fillText("object store", right + 8, h / 2);
+
+        for (let i = packets.length - 1; i >= 0; i--) {
+          if (now - packets[i].born > SHIP_MS) packets.splice(i, 1);
+        }
+
+        for (const packet of packets) {
+          const progress = (now - packet.born) / SHIP_MS;
+          const y = gap * (packet.track + 1);
+
+          context.globalAlpha = progress < 0.1 ? progress / 0.1 : progress > 0.9 ? (1 - progress) / 0.1 : 1;
+          context.fillStyle = packet.colour;
+          context.textAlign = "left";
+          context.font = "11px ui-monospace, Menlo, monospace";
+          context.fillText(packet.text, left + (right - left - 150) * progress, y - 5);
+          context.globalAlpha = 1;
+        }
+      }
+
+      // --- channel state ---------------------------------------------------------
+
+      async function refresh(channel) {
+        const response = await fetch("/v1/channels/" + channel.name);
+        const body = await response.json();
+
+        channel.version.textContent = body.version || "—";
+        channel.version.style.color = channel.colour;
+        channel.meta.textContent =
+          body.rollout + "% rollout · " + (body.cached ? "cached" : "cold") +
+          (body.history.length ? " · last: " + body.history[0].kind : "");
+      }
+
+      async function act(channel, action) {
+        channel.buttons.forEach((button) => (button.disabled = true));
+
+        try {
+          await fetch("/v1/" + action + "/" + channel.name, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ reason: action + " from the visualiser" }),
+          });
+          await refresh(channel);
+        } finally {
+          channel.buttons.forEach((button) => (button.disabled = false));
+        }
+      }
+
+      function stats() {
+        document.getElementById("issued").textContent = totals.issued.toLocaleString();
+
+        if (totals.elapsed > 0) {
+          const perResolve = totals.elapsed / totals.resolved;
+          document.getElementById("throughput").textContent =
+            Math.round(1_000_000 / perResolve).toLocaleString() + " resolves/s";
+          document.getElementById("per-resolve").textContent = perResolve.toFixed(2) + " µs";
+        }
+
+        const ratio = totals.sampled > 0 ? totals.drawn / totals.sampled : 1;
+        document.getElementById("sampling").textContent =
+          ratio < 0.98 ? "drawing 1 in " + Math.round(1 / ratio) : "drawing every one";
+
+        document.getElementById("blob-note").textContent =
+          "Sampled: a fetch is drawn for a small fraction of served updates, because at " +
+          rate().toLocaleString() + " check-ins a second every one is a solid block of text.";
+      }
+
+      channels.forEach((channel) => {
+        channel.buttons.forEach((button) =>
+          button.addEventListener("click", () => act(channel, button.dataset.action))
+        );
+
+        refresh(channel);
+        issueLoop(channel);
+      });
+
+      setInterval(() => channels.forEach(refresh), 1500);
+      setInterval(stats, 250);
+      requestAnimationFrame(draw);
+      stats();
     </script>
   </body>
 </html>

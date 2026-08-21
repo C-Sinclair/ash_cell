@@ -30,6 +30,75 @@ defmodule RolloutWeb.UpdatesController do
     end
   end
 
+  @max_batch 2_000
+
+  @doc """
+  Resolves many check-ins in one request, and reports what they cost.
+
+  A load-generation affordance, and it exists for a specific reason: a browser holds
+  about six connections per host, so a page cannot issue hundreds of check-ins a
+  second one at a time — it would be measuring the browser's connection pool, not
+  the cell. Every entry in the response is a real resolve against the real channel,
+  and `elapsed_us` is the time the whole batch took, so the throughput on screen is
+  measured rather than asserted.
+
+  Returns counts per version rather than a row per device. The visualiser only needs
+  the distribution to draw from, and a row per device at this rate is bandwidth spent
+  on nothing.
+  """
+  def check_batch(conn, params) do
+    with {:ok, channel} <- fetch(params, "channel"),
+         {:ok, runtime} <- fetch_runtime(params) do
+      count = params["count"] |> to_count() |> min(@max_batch)
+      offset = to_count(params["offset"])
+
+      checkin = fn n ->
+        %{
+          device_id: "phone-#{offset + n}",
+          platform: atomise(params["platform"] || "ios", [:ios, :android]),
+          arch: params["arch"] || "arm64",
+          runtime: runtime,
+          current_release: nil
+        }
+      end
+
+      {elapsed, tally} =
+        :timer.tc(fn ->
+          Enum.reduce(1..count, %{}, fn n, tally ->
+            key =
+              case Resolve.check(channel, checkin.(n)) do
+                {:update, %{version: version}} -> version
+                :up_to_date -> "up_to_date"
+                :no_release -> "no_release"
+              end
+
+            Map.update(tally, key, 1, &(&1 + 1))
+          end)
+        end)
+
+      json(conn, %{
+        channel: channel,
+        count: count,
+        elapsed_us: elapsed,
+        per_resolve_us: Float.round(elapsed / max(count, 1), 3),
+        versions: tally
+      })
+    else
+      {:error, message} -> error(conn, 422, message)
+    end
+  end
+
+  defp to_count(value) when is_integer(value) and value > 0, do: value
+
+  defp to_count(value) when is_binary(value) do
+    case Integer.parse(value) do
+      {n, _} when n > 0 -> n
+      _ -> 1
+    end
+  end
+
+  defp to_count(_), do: 1
+
   defp respond(conn, channel, checkin) do
     case Resolve.check(channel, checkin) do
       :no_release ->

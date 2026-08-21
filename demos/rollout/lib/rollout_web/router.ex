@@ -28,6 +28,11 @@ defmodule RolloutWeb.Router do
     # to stay trivially cacheable and writes nothing.
     post "/check", UpdatesController, :check
 
+    # Many resolves in one request, because a browser cannot issue hundreds a second
+    # one at a time -- it would be measuring its own connection pool. Each entry is
+    # still a real resolve, and the response carries what the batch cost.
+    post "/check/batch", UpdatesController, :check_batch
+
     get "/channels", ControlController, :index
 
     # The action leads and the channel trails, because a channel name has a slash

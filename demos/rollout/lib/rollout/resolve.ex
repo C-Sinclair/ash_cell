@@ -28,7 +28,7 @@ defmodule Rollout.Resolve do
   guarantee the whole demo exists to make good on.
 
   Measured: ~34 µs uncached against ~0.04 µs cached. See
-  `docs/prd.md` and `bench/resolve.exs`.
+  `docs/design.md` and `bench/resolve.exs`.
   """
 
   require Ash.Query
