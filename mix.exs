@@ -2,6 +2,12 @@ defmodule AshCell.MixProject do
   use Mix.Project
 
   @version "0.1.0"
+  @source_url "https://github.com/C-Sinclair/ash_cell"
+
+  @description """
+  Database-per-tenant SQLite for the Ash Framework — each tenant is one
+  encrypted file, owned by one process at a time, replicated to object storage.
+  """
 
   def project do
     [
@@ -11,7 +17,63 @@ defmodule AshCell.MixProject do
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
       deps: deps(),
-      aliases: aliases()
+      aliases: aliases(),
+
+      # Hex
+      description: @description,
+      package: package(),
+
+      # Docs
+      name: "AshCell",
+      docs: docs(),
+      source_url: @source_url
+    ]
+  end
+
+  defp package do
+    [
+      name: "ash_cell",
+      maintainers: ["Conor Sinclair"],
+      licenses: ["MIT"],
+      links: %{
+        "GitHub" => @source_url,
+        "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
+        "Ash Framework" => "https://ash-hq.org"
+      },
+      files: ~w[lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* docs]
+    ]
+  end
+
+  defp docs do
+    [
+      main: "readme",
+      source_ref: "v#{@version}",
+      source_url: @source_url,
+      extra_section: "GUIDES",
+      extras: [
+        {"README.md", title: "Home"},
+        {"CHANGELOG.md", title: "Changelog"},
+        "docs/spec.md",
+        "docs/dst.md"
+      ],
+      groups_for_modules: [
+        "Getting started": [AshCell, AshCell.Resource, AshCell.Migrator],
+        "Integration points": [
+          AshCell.Binder,
+          AshCell.CellKey,
+          AshCell.Job,
+          AshCell.LiveView,
+          AshCell.Plug.OwnerRouting
+        ],
+        "Replication and ownership": [
+          AshCell.Lease,
+          AshCell.ObjectStore,
+          AshCell.Ownership,
+          AshCell.Replicator,
+          AshCell.SnapshotPolicy
+        ],
+        Internals: ~r/.*/
+      ]
     ]
   end
 
@@ -41,7 +103,8 @@ defmodule AshCell.MixProject do
       {:req, "~> 0.5"},
       {:credo, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
-      {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
+      {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false},
+      {:usage_rules, "~> 0.1", only: [:dev, :test], runtime: false}
     ]
   end
 
@@ -58,7 +121,12 @@ defmodule AshCell.MixProject do
       # Fails loudly if exqlite was compiled without SQLCipher — a missing
       # EXQLITE_USE_SYSTEM at dep-compile time silently yields plain SQLite
       # that cannot open an encrypted database.
-      "cipher.check": &AshCell.MixProject.cipher_check/1
+      "cipher.check": &AshCell.MixProject.cipher_check/1,
+      # usage-rules.md is assembled from the library's own module docs plus the
+      # hand-written rules, so it cannot drift from the API it describes.
+      "usage_rules.sync": [
+        "usage_rules.sync usage-rules.md --all --link-to-folder deps --yes"
+      ]
     ]
   end
 
