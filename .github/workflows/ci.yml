@@ -336,6 +336,111 @@ jobs:
         working-directory: ash_cell/demos/rollout
         run: mix test
 
+  demo-vcs:
+    name: Demo — vcs
+    runs-on: ubuntu-latest
+
+    # The only demo with a non-Elixir half, and the only one whose central claim cannot be
+    # checked from `mix test`: that a losing push is refused. That needs the real binary
+    # talking to a listening server, so this job runs `scripts/e2e.sh` as well as both
+    # suites. It also runs the `:minio` tests, which are excluded by default — the
+    # snapshotter's fencing is the reason they exist.
+    env:
+      MIX_ENV: test
+      EXQLITE_USE_SYSTEM: "1"
+      EXQLITE_SYSTEM_CFLAGS: "-I/usr/include/sqlcipher"
+      EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ash_cell
+
+      - uses: actions/checkout@v4
+        with:
+          repository: C-Sinclair/ash_sqlite
+          ref: main
+          path: ash_sqlite
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: ash_cell/.tool-versions
+          version-type: strict
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install SQLCipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev
+
+      - name: Install MinIO
+        run: |
+          curl -fsSL -o /usr/local/bin/minio https://dl.min.io/server/minio/release/linux-amd64/minio
+          curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x /usr/local/bin/minio /usr/local/bin/mc
+
+      # The demo's test config defaults to the same endpoint, bucket, and credentials as the
+      # library's, so the library's script is what brings the store up here too.
+      - name: Start MinIO
+        working-directory: ash_cell
+        run: scripts/minio.sh
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ash_cell/demos/vcs/deps
+            ash_cell/demos/vcs/_build
+            ash_cell/demos/vcs/cli/target
+          key: ${{ runner.os }}-demo-vcs-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('ash_cell/demos/vcs/mix.lock', 'ash_cell/demos/vcs/cli/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-demo-vcs-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Fetch dependencies
+        working-directory: ash_cell/demos/vcs
+        run: mix deps.get
+
+      - name: Compile exqlite against SQLCipher
+        working-directory: ash_cell/demos/vcs
+        run: mix deps.compile exqlite --force
+
+      # The e2e script asserts the cell file carries no plaintext, which is only true with
+      # SQLCipher linked in. A missing variable above fails silently in exqlite, so assert it
+      # here rather than letting the script report it as a mysterious plaintext hit.
+      - name: Check SQLCipher is linked
+        working-directory: ash_cell/demos/vcs
+        run: mix cipher.check
+
+      - name: Check formatting
+        working-directory: ash_cell/demos/vcs
+        run: mix format --check-formatted
+
+      - name: Compile
+        working-directory: ash_cell/demos/vcs
+        run: mix compile --warnings-as-errors
+
+      - name: Check the client's formatting
+        working-directory: ash_cell/demos/vcs/cli
+        run: cargo fmt --check
+
+      - name: Lint the client
+        working-directory: ash_cell/demos/vcs/cli
+        run: cargo clippy --all-targets -- -D warnings
+
+      - name: Test the client
+        working-directory: ash_cell/demos/vcs/cli
+        run: cargo test
+
+      - name: Test the server
+        working-directory: ash_cell/demos/vcs
+        run: mix test --include minio
+
+      - name: End to end — two clones and a losing push
+        working-directory: ash_cell/demos/vcs
+        run: scripts/e2e.sh
+
   demo-shroud:
     name: Demo — shroud
     runs-on: ubuntu-latest

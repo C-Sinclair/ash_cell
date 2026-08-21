@@ -1,0 +1,10 @@
+/_build/
+/cover/
+/deps/
+/doc/
+/.fetch
+erl_crash.dump
+*.ez
+/priv/cells/
+/priv/test_cells/
+/cli/target/
