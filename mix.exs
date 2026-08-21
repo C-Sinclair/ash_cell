@@ -40,7 +40,7 @@ defmodule AshCell.MixProject do
         "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
         "Ash Framework" => "https://ash-hq.org"
       },
-      files: ~w[lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* docs]
+      files: ~w[lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* docs usage-rules.md]
     ]
   end
 
