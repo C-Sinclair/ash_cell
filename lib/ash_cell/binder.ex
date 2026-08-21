@@ -2,6 +2,10 @@ defmodule AshCell.Binder do
   @moduledoc """
   Implements `AshSqlite.TenantBinder` in terms of `AshCell.bind/1`.
 
+  It also brackets writes for `AshCell.ReadCache`, which is the other thing only
+  this seam can do: the data layer says whether a statement is a read or a write,
+  and this is the last point at which that is known alongside the tenant.
+
   This is the whole of the integration. AshSqlite asks "which connection does this
   tenant's statement run on", once per statement, in the process that is about to
   issue it; AshCell answers by starting the cell if it is not resident and binding
@@ -43,11 +47,11 @@ defmodule AshCell.Binder do
   @behaviour AshSqlite.TenantBinder
 
   @impl true
-  def bind(tenant, fun) do
+  def bind(tenant, opts, fun) do
     case AshCell.bind(tenant) do
       {:ok, previous} ->
         try do
-          fun.()
+          bracket(tenant, Keyword.get(opts, :usage, :write), fun)
         after
           AshCell.restore(previous)
         end
@@ -60,5 +64,19 @@ defmodule AshCell.Binder do
           cell_key: AshCell.CellKey.resolve(tenant),
           reason: reason
     end
+  end
+
+  # Reads run as they always did. Writes and the callback that opens a transaction
+  # are bracketed, so `AshCell.ReadCache` erases the cell's projections before the
+  # statement and again after it -- the second one being what stops a reader
+  # publishing a pre-commit projection that outlives the commit.
+  #
+  # Defaulting an absent `:usage` to `:write` is deliberate: an unbracketed write
+  # serves stale reads afterwards, and an over-bracketed read only loses a cache
+  # entry.
+  defp bracket(_tenant, :read, fun), do: fun.()
+
+  defp bracket(tenant, usage, fun) when usage in [:write, :transaction] do
+    AshCell.ReadCache.writing(AshCell.CellKey.resolve(tenant), fun)
   end
 end

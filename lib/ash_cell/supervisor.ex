@@ -9,6 +9,7 @@ defmodule AshCell.Supervisor do
     children = [
       AshCell.Registry,
       AshCell.Holders,
+      AshCell.ReadCache,
       {DynamicSupervisor, name: AshCell.CellSupervisor, strategy: :one_for_one},
       {AshCell.Manager, opts},
       # Last in the list, so it is first to terminate: cells are still alive and

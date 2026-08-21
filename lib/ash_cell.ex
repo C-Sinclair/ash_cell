@@ -237,8 +237,15 @@ defmodule AshCell do
   def transaction(tenant, fun) when is_function(fun, 0) do
     assert_same_cell!(AshCell.CellKey.resolve(tenant))
 
-    deferring_notifications(fn ->
-      with_tenant(tenant, fn -> repo().transaction(fun, mode: :immediate) end)
+    # Bracketed for `AshCell.ReadCache` here rather than in `AshCell.Binder`,
+    # because this transaction is opened *below* the data layer: the binder sees
+    # each statement inside it as its own write and would end its bracket at the
+    # last statement rather than at the commit. That gap is enough for a reader to
+    # publish a projection built from the uncommitted state and have it survive.
+    AshCell.ReadCache.writing(AshCell.CellKey.resolve(tenant), fn ->
+      deferring_notifications(fn ->
+        with_tenant(tenant, fn -> repo().transaction(fun, mode: :immediate) end)
+      end)
     end)
   end
 
