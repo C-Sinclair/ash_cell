@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Known limits
+    url: https://github.com/C-Sinclair/ash_cell#whats-proven-and-what-isnt
+    about: >-
+      Deploys still drop websockets, fencing protects writes and not reads,
+      recovery point is ~1s, and there are no aggregates. These are stated
+      limits rather than bugs — check here before opening an issue.
+  - name: Ash Framework Discord
+    url: https://discord.gg/D7FNG2q
+    about: Questions about Ash itself, rather than AshCell.

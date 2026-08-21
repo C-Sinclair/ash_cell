@@ -1,0 +1,26 @@
+version: 2
+updates:
+  - package-ecosystem: mix
+    directory: /
+    schedule:
+      interval: monthly
+      day: thursday
+    versioning-strategy: lockfile-only
+    # The ash_sqlite fork is a git dependency and deliberately unpinned to a
+    # release; leave it to `mix deps.update` rather than opening a PR per commit.
+    ignore:
+      - dependency-name: ash_sqlite
+    groups:
+      dev-dependencies:
+        dependency-type: development
+      production-dependencies:
+        dependency-type: production
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+      day: thursday
+    groups:
+      actions:
+        patterns: ["*"]
