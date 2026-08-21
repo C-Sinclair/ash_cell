@@ -82,9 +82,7 @@ defmodule AshCell.ReadCacheIntegrationTest do
     BoundPatient.create!("Ada", tenant: tenant)
     assert cached_names(tenant) == ["Ada"]
 
-    Ash.bulk_create!([%{name: "Grace"}, %{name: "Edsger"}], BoundPatient, :create,
-      tenant: tenant
-    )
+    Ash.bulk_create!([%{name: "Grace"}, %{name: "Edsger"}], BoundPatient, :create, tenant: tenant)
 
     assert ReadCache.fetch(tenant, :names) == :miss
     assert cached_names(tenant) == ["Ada", "Edsger", "Grace"]
