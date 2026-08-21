@@ -20,8 +20,24 @@ defmodule RolloutWeb.Router do
     get "/", PageController, :home
   end
 
-  # Other scopes may use custom stacks.
-  # scope "/api", RolloutWeb do
-  #   pipe_through :api
-  # end
+  scope "/v1", RolloutWeb do
+    pipe_through :api
+
+    # The device path. No channel in the URL, because a client sends its channel
+    # alongside everything else it is -- and because this is the one route that has
+    # to stay trivially cacheable and writes nothing.
+    post "/check", UpdatesController, :check
+
+    get "/channels", ControlController, :index
+
+    # The action leads and the channel trails, because a channel name has a slash
+    # in it (`myapp/prod`) -- which is what a real fleet looks like -- and a glob
+    # segment has to be last. It also curls better than the alternative.
+    post "/releases/*channel", ControlController, :cut
+    post "/promote/*channel", ControlController, :promote
+    post "/ramp/*channel", ControlController, :ramp
+    post "/rollback/*channel", ControlController, :rollback
+    get "/collectable/*channel", ControlController, :collectable
+    get "/channels/*channel", ControlController, :show
+  end
 end

@@ -9,9 +9,61 @@ week.
     mix run -e "Rollout.Seed.run()"
     mix test
     mix run bench/resolve.exs
+    mix phx.server                 # port 4020
 
 The design argument, the trade-offs, and the open questions are in
 [`docs/prd.md`](docs/prd.md). This file is what the code currently proves.
+
+## Driving it
+
+Two halves: one device route that never writes, and operator routes that do. No
+authentication on any of them, which is a demo being honest rather than a demo being
+insecure.
+
+    B=http://127.0.0.1:4020/v1
+
+A device says what it *is* and what it already has, not who it is:
+
+    curl -s -X POST $B/check -H 'content-type: application/json' -d '{
+      "channel": "myapp/prod", "device_id": "phone-1",
+      "platform": "ios", "arch": "arm64", "runtime": "1.42",
+      "current_release": null
+    }'
+    # => {"status":"update","release_id":"e47614e2…","artifacts":[{"blob_hash":"…","url":"/blobs/…"}]}
+
+Cut a release. It is inert — nothing is served until something points at it, because
+a half-uploaded artifact set must never be reachable:
+
+    curl -s -X POST $B/releases/myapp/prod -H 'content-type: application/json' -d '{
+      "version": "2.0.0", "notes": "the bad one",
+      "artifacts": [{"blob_hash":"bundle-2.0.0","kind":"bundle","platform":"ios",
+                     "arch":"arm64","size":2500000,"min_runtime":140}]
+    }'
+    # => {"release_id":"21bae394…","version":"2.0.0","state":"draft"}
+
+Promote it, then roll it back. Every write answers with the channel's new state, so
+a rollback's effect is visible in the output of the request that caused it:
+
+    curl -s -X POST $B/promote/myapp/prod  -d '{"release_id":"21bae394…","rollout":100}' -H 'content-type: application/json'
+    curl -s -X POST $B/rollback/myapp/prod -d '{"reason":"crash loop"}' -H 'content-type: application/json'
+
+Measured against a running server: after that rollback, ten devices checked in and
+ten got the old release. Then re-promoted at `"rollout": 10`, 200 devices checked in
+and 19 were offered it — a hash of device against release, not a counter, so the
+share is a distribution and a device gets the same answer every time.
+
+    GET  /v1/channels                    every channel, its pointer, its log
+    GET  /v1/channels/*channel           one channel, and whether its manifest is cached
+    POST /v1/check                       the device path -- writes nothing
+    POST /v1/releases/*channel           cut a release (inert)
+    POST /v1/promote/*channel            point the channel at one
+    POST /v1/ramp/*channel               change the share, not the release
+    POST /v1/rollback/*channel           back to the previous release
+    GET  /v1/collectable/*channel?keep=N blobs no kept release references
+
+The action leads and the channel trails because a channel name contains a slash
+(`myapp/prod`), which is the shape a real fleet uses, and a glob route segment has to
+be last.
 
 ## The cut
 
@@ -36,8 +88,9 @@ one that never serves a release the channel has moved off.
 | The pointer and its promotion log commit together | `test/rollout/control_test.exs` |
 | Staged rollout is stable per device, and ramping only adds devices | `test/rollout/resolve_test.exs` |
 | Unreferenced blobs can be identified, and shared or rollback-reachable ones are not collected | `test/rollout/control_test.exs` |
+| The same loop holds over HTTP, including a slashed channel name and a version-string runtime | `test/rollout_web/api_test.exs` |
 
-32 tests in `test/rollout/`, plus the scaffold's own.
+44 tests: 32 in `test/rollout/` and 12 over the API.
 
 ## Measured
 
@@ -101,8 +154,9 @@ Named plainly, because the demo is only useful if the edges are.
   strategy a partitioned node serves a stale pointer, so a device could be handed a
   release that was rolled back moments ago. This is the workspace's existing open
   problem, and this demo is where it acquires a user-visible consequence.
-- **No console.** There is no LiveView; the demo is driven from tests, the benchmark,
-  and `iex`.
+- **No console.** There is no LiveView. The demo is driven over HTTP, from tests, and
+  from the benchmark.
+- **No auth, no rate limiting.** Any caller can promote or roll back any channel.
 - **Not modelled at all:** delta and patch generation, signing and attestation, CDN
   edges, device enrolment, and a "no compatible bundle" signal for a client too old
   for anything on offer.
