@@ -53,6 +53,11 @@ defmodule RolloutWeb.ControlController do
     end
   end
 
+  def upgrade(conn, %{"channel" => segments} = params) do
+    channel = join(segments)
+    run(conn, channel, fn -> Control.upgrade(channel, reason: params["reason"]) end)
+  end
+
   def ramp(conn, %{"channel" => segments} = params) do
     channel = join(segments)
     run(conn, channel, fn -> Control.ramp(channel, rollout(params)) end)
@@ -87,11 +92,19 @@ defmodule RolloutWeb.ControlController do
   defp describe(channel) do
     pointer = Control.current_pointer(channel)
 
+    # Read before resolving, because resolving *populates*: this field is the cache's
+    # state as the request arrived, and answering the request warms it. Reporting it
+    # the other way round would make every response say `true` and the field
+    # worthless.
+    cached? = match?({:ok, _}, AshCell.ReadCache.fetch(channel, :manifest))
+    manifest = Rollout.Resolve.manifest(channel)
+
     %{
       channel: channel,
       release_id: pointer && pointer.release_id,
+      version: manifest.version,
       rollout: (pointer && pointer.rollout) || 0,
-      cached: match?({:ok, _}, AshCell.ReadCache.fetch(channel, :manifest)),
+      cached: cached?,
       history:
         Enum.map(Control.history(channel, 10), fn entry ->
           %{

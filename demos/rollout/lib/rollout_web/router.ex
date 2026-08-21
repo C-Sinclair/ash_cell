@@ -35,6 +35,7 @@ defmodule RolloutWeb.Router do
     # segment has to be last. It also curls better than the alternative.
     post "/releases/*channel", ControlController, :cut
     post "/promote/*channel", ControlController, :promote
+    post "/upgrade/*channel", ControlController, :upgrade
     post "/ramp/*channel", ControlController, :ramp
     post "/rollback/*channel", ControlController, :rollback
     get "/collectable/*channel", ControlController, :collectable

@@ -108,6 +108,89 @@ defmodule Rollout.Control do
     end
   end
 
+  @doc """
+  Cuts the next patch version and promotes it, in one call.
+
+  A demo affordance rather than an API a real fleet would want: shipping is two
+  deliberate steps — cut, then promote — precisely so an artifact set that is half
+  uploaded is never reachable. This collapses them so a button can drive it, and it
+  is the only place in this demo that does.
+  """
+  def upgrade(channel, opts \\ []) do
+    version = next_version(channel)
+
+    with {:ok, release} <- cut(channel, version, artifacts_for_version(version)),
+         {:ok, _} <- promote(channel, release.id, reason: opts[:reason] || "upgrade") do
+      {:ok, release}
+    end
+  end
+
+  defp next_version(channel) do
+    Release
+    |> Ash.read!(tenant: channel)
+    |> Enum.map(&parse_version(&1.version))
+    |> Enum.max(fn -> {1, 0, 0} end)
+    |> then(fn {major, minor, patch} -> "#{major}.#{minor}.#{patch + 1}" end)
+  end
+
+  defp parse_version(version) do
+    case String.split(version, ".") do
+      [major, minor, patch] ->
+        {to_int(major), to_int(minor), to_int(patch)}
+
+      _ ->
+        {0, 0, 0}
+    end
+  end
+
+  defp to_int(string) do
+    case Integer.parse(string) do
+      {n, _} -> n
+      :error -> 0
+    end
+  end
+
+  # One bundle per platform and architecture, hashed on the version so a new
+  # version genuinely means new blobs -- which is what makes the collector's job
+  # non-trivial and the shared-asset case real.
+  defp artifacts_for_version(version) do
+    [
+      %{
+        blob_hash: blob_hash(version, "ios-arm64"),
+        kind: :bundle,
+        platform: :ios,
+        arch: "arm64",
+        size: 2_400_000,
+        min_runtime: 140,
+        max_runtime: nil
+      },
+      %{
+        blob_hash: blob_hash(version, "android-arm64"),
+        kind: :bundle,
+        platform: :android,
+        arch: "arm64",
+        size: 2_600_000,
+        min_runtime: 140,
+        max_runtime: nil
+      },
+      %{
+        blob_hash: "asset-shared",
+        kind: :asset,
+        platform: :ios,
+        arch: "arm64",
+        size: 480_000,
+        min_runtime: 140,
+        max_runtime: nil
+      }
+    ]
+  end
+
+  defp blob_hash(version, target) do
+    :crypto.hash(:sha256, "#{version}-#{target}")
+    |> Base.encode16(case: :lower)
+    |> binary_part(0, 12)
+  end
+
   @doc "Changes only the rollout percentage, leaving the release alone."
   def ramp(channel, rollout) do
     case current_pointer(channel) do

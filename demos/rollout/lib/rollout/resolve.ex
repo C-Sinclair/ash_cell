@@ -38,7 +38,7 @@ defmodule Rollout.Resolve do
 
   @projection :manifest
 
-  defstruct [:release_id, :rollout, :artifacts]
+  defstruct [:release_id, :version, :rollout, :artifacts]
 
   @doc """
   Resolves a check-in against a channel.
@@ -63,11 +63,17 @@ defmodule Rollout.Resolve do
       %__MODULE__{release_id: release_id} when release_id == current ->
         :up_to_date
 
-      %__MODULE__{release_id: release_id, rollout: rollout, artifacts: artifacts} ->
+      %__MODULE__{
+        release_id: release_id,
+        version: version,
+        rollout: rollout,
+        artifacts: artifacts
+      } ->
         if eligible?(device_id, release_id, rollout) do
           {:update,
            %{
              release_id: release_id,
+             version: version,
              artifacts: Enum.filter(artifacts, &compatible?(&1, platform, arch, runtime))
            }}
         else
@@ -113,9 +119,24 @@ defmodule Rollout.Resolve do
       %{release_id: release_id, rollout: rollout} ->
         %__MODULE__{
           release_id: release_id,
+          # Denormalised into the projection rather than loaded per resolve: a
+          # device is told "2.0.0", not a UUID, and reading the release row on
+          # every check-in to learn a string that changes twice a week is the kind
+          # of cost the cache exists to remove.
+          version: version_of(channel, release_id),
           rollout: rollout,
           artifacts: artifacts_for(channel, release_id)
         }
+    end
+  end
+
+  defp version_of(channel, release_id) do
+    Rollout.Channel.Release
+    |> Ash.Query.filter(id == ^release_id)
+    |> Ash.read_one!(tenant: channel)
+    |> case do
+      nil -> nil
+      release -> release.version
     end
   end
 

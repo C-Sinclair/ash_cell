@@ -47,6 +47,7 @@ defmodule RolloutWeb.UpdatesController do
           status: "update",
           channel: channel,
           release_id: manifest.release_id,
+          version: manifest.version,
           artifacts: Enum.map(manifest.artifacts, &artifact/1)
         })
     end

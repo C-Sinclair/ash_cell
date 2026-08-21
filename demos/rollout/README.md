@@ -14,6 +14,36 @@ week.
 The design argument, the trade-offs, and the open questions are in
 [`docs/prd.md`](docs/prd.md). This file is what the code currently proves.
 
+## The visualiser
+
+`mix phx.server`, then <http://127.0.0.1:4020>.
+
+Three lanes, one per channel, colour coded — prod green, beta blue, canary amber. A
+dot leaves the client every 700 ms, travels to the cell, turns around when the
+response lands, and comes back carrying the version it was told. A hollow dot was
+told `up_to_date`: either already current, or outside a staged rollout, which is why
+beta at 25% shows a mix and prod at 100% does not.
+
+    client   ·       ·        │ 1.2.1 ─▶     myapp/prod     [upgrade] [rollback]
+                 ·           │
+    client       ·      ·     │ 1.2.0 ─▶     myapp/beta     25%
+    client   ·           ·    │ 1.2.0 ─▶     myapp/canary
+
+Below it, the blob lane — deliberately dumber, because that is the point being made:
+
+    client ── bundle-1.2.1.js ─▶ object store
+
+Every dot is a real `POST /v1/check`, and the two buttons call the real `upgrade` and
+`rollback` routes on that channel's cell. So the version on the lane changes for
+every check-in *after* the write commits, and nothing on the page is simulated. Each
+row also shows whether that channel's manifest is currently `cached` or `cold` — press
+either button and it reads `cold` until the next check-in warms it.
+
+The page is one template with inline CSS and JS and no build step, because the app is
+scaffolded without an asset pipeline. That rules out LiveView, which needs a JS
+bundle — and it is the better answer anyway: with `fetch` the animation is driven by
+the requests themselves rather than by a server telling the page what to draw.
+
 ## Driving it
 
 Two halves: one device route that never writes, and operator routes that do. No
@@ -57,6 +87,7 @@ share is a distribution and a device gets the same answer every time.
     POST /v1/check                       the device path -- writes nothing
     POST /v1/releases/*channel           cut a release (inert)
     POST /v1/promote/*channel            point the channel at one
+    POST /v1/upgrade/*channel            cut the next patch version and promote it
     POST /v1/ramp/*channel               change the share, not the release
     POST /v1/rollback/*channel           back to the previous release
     GET  /v1/collectable/*channel?keep=N blobs no kept release references
@@ -89,8 +120,9 @@ one that never serves a release the channel has moved off.
 | Staged rollout is stable per device, and ramping only adds devices | `test/rollout/resolve_test.exs` |
 | Unreferenced blobs can be identified, and shared or rollback-reachable ones are not collected | `test/rollout/control_test.exs` |
 | The same loop holds over HTTP, including a slashed channel name and a version-string runtime | `test/rollout_web/api_test.exs` |
+| The visualiser drives the real API rather than a mock | `test/rollout_web/page_test.exs` |
 
-44 tests: 32 in `test/rollout/` and 12 over the API.
+55 tests: 32 in `test/rollout/`, 20 over the API, 3 on the page.
 
 ## Measured
 
@@ -146,7 +178,8 @@ Named plainly, because the demo is only useful if the edges are.
 - **No blobs are actually stored.** Artifacts are hashes and sizes; nothing is
   uploaded, and `collectable_blobs/2` returns hashes rather than deleting objects.
   The GC *argument* — that a single writer makes "unreferenced" a query rather than a
-  distributed protocol — is tested. Wiring it to `AshCell.ObjectStore` is not done.
+  distributed protocol — is tested. Wiring it to `AshCell.ObjectStore` is not done,
+  and the blob lane in the visualiser animates a fetch that does not happen.
 - **No install telemetry.** `docs/prd.md` argues it belongs in a separate cell and
   that co-locating it would destroy the read cache. That is an argument, not a
   measurement; the counterexample benchmark is unwritten.
@@ -154,8 +187,13 @@ Named plainly, because the demo is only useful if the edges are.
   strategy a partitioned node serves a stale pointer, so a device could be handed a
   release that was rolled back moments ago. This is the workspace's existing open
   problem, and this demo is where it acquires a user-visible consequence.
-- **No console.** There is no LiveView. The demo is driven over HTTP, from tests, and
-  from the benchmark.
+- **The visualiser is one node.** It shows a check-in resolving against a cell on the
+  same machine. The interesting version of this picture — dots arriving at *several*
+  nodes and a rollback having to reach all of them — is the `:replicated` and
+  `:leased` work that does not exist yet.
+- **`upgrade` is a demo affordance.** Cutting and promoting are two deliberate steps
+  everywhere else, precisely so a half-uploaded artifact set is unreachable; that
+  route collapses them so a button can drive it.
 - **No auth, no rate limiting.** Any caller can promote or roll back any channel.
 - **Not modelled at all:** delta and patch generation, signing and attestation, CDN
   edges, device enrolment, and a "no compatible bundle" signal for a client too old

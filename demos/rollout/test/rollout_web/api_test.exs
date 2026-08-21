@@ -68,6 +68,18 @@ defmodule RolloutWeb.ApiTest do
       assert %{"artifacts" => []} = check(conn, channel, runtime: "1.41")
     end
 
+    test "the response names the version, not only the release id", %{
+      conn: conn,
+      channel: channel
+    } do
+      {:ok, release} = Control.cut(channel, "3.1.4", cut_artifacts("3.1.4"))
+      {:ok, _} = Control.promote(channel, release.id)
+
+      # A device is told "3.1.4". Denormalised into the cached projection so that
+      # learning it does not cost a read per check-in.
+      assert %{"version" => "3.1.4"} = check(conn, channel)
+    end
+
     test "a device already current is told so", %{conn: conn, channel: channel} do
       {:ok, release} = Control.cut(channel, "1.0.0", cut_artifacts("1.0.0"))
       {:ok, _} = Control.promote(channel, release.id)
@@ -152,6 +164,45 @@ defmodule RolloutWeb.ApiTest do
                |> json_response(200)
 
       assert id == release.id
+    end
+
+    test "upgrade cuts the next patch version and promotes it", %{conn: conn, channel: channel} do
+      {:ok, release} = Control.cut(channel, "1.4.1", cut_artifacts("1.4.1"))
+      {:ok, _} = Control.promote(channel, release.id)
+
+      assert %{"version" => "1.4.2"} =
+               conn |> post(~p"/v1/upgrade/#{channel}") |> json_response(200)
+
+      assert %{"version" => "1.4.2"} = check(conn, channel)
+    end
+
+    test "upgrade then rollback returns the previous version", %{conn: conn, channel: channel} do
+      {:ok, release} = Control.cut(channel, "1.4.1", cut_artifacts("1.4.1"))
+      {:ok, _} = Control.promote(channel, release.id)
+
+      conn |> post(~p"/v1/upgrade/#{channel}") |> json_response(200)
+      assert %{"version" => "1.4.2"} = check(conn, channel)
+
+      assert %{"version" => "1.4.1"} =
+               conn |> post(~p"/v1/rollback/#{channel}") |> json_response(200)
+
+      assert %{"version" => "1.4.1"} = check(conn, channel)
+    end
+
+    test "describing a channel reports the cache as it arrived, not as it left", %{
+      conn: conn,
+      channel: channel
+    } do
+      {:ok, release} = Control.cut(channel, "1.0.0", cut_artifacts("1.0.0"))
+      {:ok, _} = Control.promote(channel, release.id)
+
+      # Describing resolves, and resolving populates. Reporting after that would
+      # make the field always true and therefore worthless.
+      assert %{"cached" => false} =
+               conn |> get(~p"/v1/channels/#{channel}") |> json_response(200)
+
+      assert %{"cached" => true} =
+               conn |> get(~p"/v1/channels/#{channel}") |> json_response(200)
     end
 
     test "a rollback with nowhere to go is a 409", %{conn: conn, channel: channel} do
