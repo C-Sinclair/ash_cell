@@ -32,5 +32,6 @@ defmodule AshCell.Test.Domain do
     resource AshCell.Test.Patient
     resource AshCell.Test.TenantPatient
     resource AshCell.Test.BoundPatient
+    resource AshCell.Test.Note
   end
 end

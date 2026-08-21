@@ -82,6 +82,25 @@ defmodule AshCell.Resource do
 
   Anything that talks to a cell without going through a resource — `AshCell.checkpoint/1`,
   raw `Ecto.Adapters.SQL.query/3`, the benchmarks — still binds for itself.
+
+  ## Resources that are not cells
+
+  A shared table is a plain `AshSqlite.DataLayer` resource, not this extension:
+  `strategy :context` is required here, because the tenant is how a cell is found.
+  Transactions still work — `transactions? true` in the `sqlite` section is enough
+  on its own, with nothing to bind.
+
+  **Give it its own repo module.** Ecto keys the dynamic binding as
+  `{repo_module, :dynamic_repo}`, so binding a cell affects exactly one module. A
+  non-tenanted resource on a *different* repo module is immune to cell bindings by
+  construction. One that shares the cells' repo module inherits whatever the
+  process happens to have bound, and its rows land in that tenant's database —
+  silently, because nothing in the stack can tell that a shared row was meant to be
+  shared. Both behaviours are pinned down in `test/non_tenanted_test.exs`.
+
+  A transaction still cannot span the two, for the same reason it cannot span two
+  cells: separate repos are separate connections, so a cell transaction and a
+  shared-table transaction commit independently.
   """
 
   use Spark.Dsl.Extension,
