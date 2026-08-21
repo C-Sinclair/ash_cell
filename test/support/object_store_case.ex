@@ -14,6 +14,19 @@ defmodule AshCell.ObjectStoreCase do
   """
   import ExUnit.Callbacks, only: [start_supervised!: 1]
 
+  @doc """
+  A cell key no earlier or later run can collide with.
+
+  `System.unique_integer/1` is unique within a VM and restarts from small numbers
+  in the next one, while the bucket outlives every run. So a name built from it
+  alone gets handed a previous run's lease and snapshots: conditional writes then
+  fail for a reason that has nothing to do with the test, and whether a test passes
+  depends on what ran before it. Wall-clock time is what makes the name unique
+  across runs; the counter keeps it unique within one.
+  """
+  def unique_cell(prefix),
+    do: "#{prefix}_#{System.system_time(:nanosecond)}_#{System.unique_integer([:positive])}"
+
   def store do
     config = Application.get_env(:ash_cell, :object_store, [])
 
