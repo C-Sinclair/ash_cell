@@ -10,8 +10,8 @@ MyApp.Patient |> Ash.read!(tenant: "acme")
 MyApp.Patient.create("Ada Lovelace", tenant: "acme")
 ```
 
-> **Status: experimental.** Working end to end with a test suite and two demos, but
-> the API is not stable and it has not been run in production. See
+> **Status: experimental.** Working end to end with a test suite and five demos, all
+> of them in CI — but the API is not stable and it has not been run in production. See
 > [What's proven, and what isn't](#whats-proven-and-what-isnt).
 
 ## Why
@@ -118,6 +118,7 @@ children = [
 | `:max_resident` | `256` | Residency bound. Once reached, the least-recently-used cell is closed. Closing drops a connection; the data is a file and stays put. |
 | `:key_for` | `nil` | `fn tenant -> key end`. Supplying it turns on encryption. |
 | `:store` | `nil` | An `AshCell.ObjectStore` struct. Supplying it turns on replication and lease-based ownership. |
+| `:snapshot` | on with a store | When a cell ships itself. A keyword list (`wal_bytes`, `max_age_ms`, `interval_ms`) or `false` to ship only on drain. See [Replication and ownership](#replication-and-ownership). |
 | `:owner` | `node()` | This node's identity in leases. |
 
 The repo is an ordinary `AshSqlite.Repo`:
@@ -307,10 +308,45 @@ On shutdown each resident cell is sealed, quiesced, checkpointed, snapshotted, a
 its **lease released** before closing. That release is what stops every successor
 waiting out the full TTL for every tenant on every deploy.
 
-## Web and background work
+### When a cell ships
 
-**Route requests to the owning node** — a cell is only open in one place, so send the
-request to the data rather than proxying queries to it:
+Shipping only on drain would make a clean shutdown safe and `kill -9` lose *everything
+written since the cell activated* — not a second of writes, the whole session. So a
+cell ships on a schedule, on whichever of two triggers fires first:
+
+| Option | Default | Trigger |
+|---|---|---|
+| `wal_bytes` | 4 MiB | The `-wal` sidecar has grown past this. One `File.stat`, no SQLite involvement. |
+| `max_age_ms` | 60 s | There is *anything* unshipped and it has been that long. Size alone would leave the low-traffic tenant — whose single write matters most — unshipped indefinitely. |
+| `interval_ms` | 5 s | How often a cell *asks*, not how often it ships. |
+
+A cell with an empty WAL never ships, so a dormant per-entity cell costs nothing. Each
+cell takes a random offset into its first interval and re-jitters every tick, because
+a fleet that asked on the same tick would answer together — the whole fleet's bytes
+leaving at once, which is the thundering herd re-created on a timer. Shipping happens
+off the cell process, so a whole-file PUT does not block that cell's queries.
+
+**A refused shipment stops the cell serving.** `{:error, :precondition_failed}` on a
+durability write is the only local signal that a successor has claimed the cell and
+written past this node's high-water mark. Being displaced is safe until then — the
+conditional write is what makes it safe — and unsafe from then on: every further write
+is unshippable and every read answers from a database whose real owner has moved on. So
+the cell key is quarantined, the process force-closed, and the lease dropped. Recovery
+is explicit and ordered: re-claim, restore, release
+([ADR-10](docs/decisions/ADR-10-fail-closed-on-a-refused-shipment.md)).
+
+## Reads and writes
+
+A cell is open on one node at a time, so *where* a statement runs is part of the
+design rather than an operational detail. Three separate mechanisms cover it, because
+each buys something different at a different price.
+
+### Writes go to the node that owns the cell
+
+A request that lands on the wrong node has three options: proxy every query across the
+network — throwing away the colocation that makes this worth having — steal the lease,
+thrashing a handover per request, or send the *request* to the data. Only the third
+keeps the property the design rests on:
 
 ```elixir
 plug AshCell.Plug.OwnerRouting,
@@ -318,9 +354,93 @@ plug AshCell.Plug.OwnerRouting,
   store: {MyApp.ObjectStore, :config, []}
 ```
 
-On Fly.io this replies with `fly-replay`. Elsewhere, supply a `redirect_to`
-callback, or omit it and the local node takes the lease — correct for single-node
-and development.
+On Fly.io this answers `fly-replay` and the platform re-issues the request against the
+owning instance — no proxy, no extra hop. Elsewhere pass
+`transport: {:redirect, fun}`, or `transport: :none` and the request is served
+locally with this node taking the lease, which is correct for single-node deployments
+and for development.
+
+The websocket upgrade is an ordinary HTTP request, so it routes the same way. That is
+what stops a reconnecting client discovering ownership by trial and error while
+somebody watches a spinner. What it deliberately does *not* do is wait for ownership
+to settle: an unclaimed lease is taken locally and served, because blocking a user on
+a distributed handover costs more than the handover is worth.
+
+### Reads are bounded, not fenced
+
+The conditional write fences writes — a displaced owner's durability write is refused
+before it has acknowledged anything. **Reads get no such moment.** A node partitioned
+from its peers but still reachable by clients keeps answering from a database another
+node has since taken over and moved on from. Nothing fails; the answers are simply
+stale, and plausible.
+
+`AshCell.Ownership` is the read-side counterpart, and it offers three levels rather
+than one default, because there is no honest single answer:
+
+| Mode | Guarantee | Cost |
+|---|---|---|
+| `:none` | none | nothing, and no clock assumption at all |
+| `:bounded` (default) | a read is never more than the lease TTL behind ownership | trusting the TTL |
+| `{:strict, store}` | no staleness window | one round trip to the object store, per read |
+
+```elixir
+AshCell.Ownership.with_ownership(ownership, :bounded, fn ->
+  Ash.read!(MyApp.Patient, tenant: "acme")
+end)
+```
+
+The elapsed-time measurement is monotonic, so an NTP step or a VM migration cannot
+silently widen the window. **This is the one place in the design where clock skew
+matters** — everything else is safe under arbitrary drift because it rests on
+conditional writes, and bounded staleness cannot be, since the bound *is* a duration.
+
+`:strict` throws away the entire performance argument for this architecture. Reach for
+it on a specific read that genuinely needs it, never as a global default.
+
+This is a mechanism to call, not an ambient check: nothing in the library applies it to
+your reads for you. The backstop below it is coarser — a cell that discovers it has been
+fenced, by having a shipment refused, is quarantined and closed — but it only fires when
+this node next tries to ship.
+
+### Hot reads do not have to open the cell
+
+A cell's reads serialise on its one connection, and there is no widening the pool out
+of it: `scripts/read_pool_probe.exs` measures a realistic filtered join getting
+*worse* as the pool grows, because per-query overhead dominates and extra connections
+on one file add contention rather than parallelism ([ADR-13](docs/decisions/ADR-13-pool-size-one-and-cache.md)).
+So the read path is improved *above* SQLite. Measured on that probe, same file:
+
+| | Per read | Throughput |
+|---|---|---|
+| pointer read, `pool_size: 1` | 17.0 µs | 59k reads/s |
+| pointer read, `:persistent_term` | 0.04 µs | 22M reads/s |
+
+`AshCell.ReadCache` holds per-cell projections in `:persistent_term` — lock-free,
+zero-copy, no mailbox to serialise on:
+
+```elixir
+AshCell.ReadCache.read(channel, :manifest, fn -> build_manifest(channel) end)
+```
+
+A cache in front of a shared database is a correctness problem, because you cannot
+know when somebody else wrote. A cell has exactly one writer and this node is it, so
+the invalidation is not a guess: `AshCell.Binder` brackets every write, erasing the
+cell's entries and bumping an epoch before the statement and again *after* the commit,
+and refuses to publish while a write is open. Readers may repopulate, because
+publishing is a compare-and-set on that epoch. Writers are monitored, so a crash
+mid-write cannot leave a stale entry publishable forever.
+
+Writes that bypass the data layer — raw Ecto under `with_tenant/2`, a `checkpoint/1`,
+a restore — must call `AshCell.ReadCache.invalidate/1` themselves. This is the same
+boundary `AshCell.Binder` has, for the same reason.
+
+It is a **single node's** cache. A four-value `read_strategy` enum
+(`:owner`, `:cached`, `:replicated`, `:leased`) was designed and then cut: `:owner`
+and `:cached` are what the cache already gives you without a declaration, and
+`:replicated` and `:leased` remain designs rather than code. Nothing here caches
+across nodes.
+
+## LiveView and background work
 
 **LiveView** — bind per callback, never once in `mount/3`. A LiveView outlives the
 cell's repo instance, so a binding taken at mount eventually points at a dead one:
@@ -348,7 +468,8 @@ end
 
 ```elixir
 AshCell.fleet()              # per-cell stats for resident cells
-AshCell.resident_tenants()   # who is open right now
+AshCell.resident_cells()     # who is open right now
+AshCell.path_for("acme")     # the file backing a cell
 AshCell.checkpoint("acme")   # fold the WAL into the main file
 AshCell.close("acme")        # close the cell, leave the file
 AshCell.delete("acme")       # close it and delete the bytes
@@ -376,6 +497,9 @@ Proven by the test suite, against real files and a real MinIO rather than mocks:
 | Multi-step actions roll back | `test/transaction_test.exs` |
 | A cell taken mid-transaction does not half-apply | force-close between two writes |
 | Compaction stays safe under concurrent writers | `demos/collab_editor` — 15 appends racing 4 compactions |
+| A cached projection is never stale or published mid-write | `test/read_cache_test.exs`, plus an ordinary Ash write invalidating it |
+| An expired lease refuses to serve reads | `test/ownership_test.exs`, on the monotonic clock |
+| A refused push is refused, not reconciled | `demos/vcs/scripts/e2e.sh`, real Rust binary against a listening server |
 | Two people typing in one paragraph lose nothing | `demos/collab_editor/test/browser/convergence.mjs`, in two real browsers |
 
 Known limits, stated because they are real:
@@ -392,6 +516,13 @@ Known limits, stated because they are real:
 - **Deploys still drop websockets.** Draining makes reconnection fast, but
   `fly-replay` does nothing for a socket already established.
 - **Thundering herd on node loss** is unsolved; cold restores need admission control.
+- **The read cache is one node's.** Cross-node caching (`:replicated`, `:leased`) is
+  designed and not built.
+- **Read fencing is a call you make.** `AshCell.Ownership` is not applied to your reads
+  automatically, and `:bounded` bounds staleness rather than removing it.
+- **Fan-out reads fall off a cliff, not a slope.** `max_resident` below a page's
+  working set makes every read evict a cell the next read wants — measured at 8.9× in
+  `demos/shroud`.
 - **Durability is whatever your pragmas say.** `exqlite` defaults `synchronous` to
   `:normal`, which in WAL mode means a returned `COMMIT` has not been fsynced.
 
@@ -399,78 +530,45 @@ Known limits, stated because they are real:
 
 Runnable Phoenix applications under [`demos/`](demos), each with a README arguing what it
 proves *and where it stops*. They are how the library's claims get checked against something
-that has to work rather than something that has to pass.
+that has to work rather than something that has to pass. All five run in CI
+(`.github/workflows/ci.yml`), so a change to the library that breaks one fails there rather
+than the next time somebody opens it.
 
-### [`demos/console`](demos/console) — one cell per **tenant**
+They are organised by **where the cell is cut**, because that is the point: one cell per
+tenant is the default, not the only option
+([ADR-19](docs/decisions/ADR-19-the-cell-cut-is-a-choice.md)).
 
-A multi-clinic healthcare SaaS: physical isolation, encryption at rest, single-writer
-ownership, object-store durability, N+1 immunity, and the deploy drain — each shown from
-outside the application's own claims (raw bytes off the disk, the `sqlite3` CLI's opinion of
-a cell file, objects fetched back out of the store). The speed panel runs the same Ash query
-against a properly indexed Postgres and against raw SQL, so the comparison can lose.
-
-### [`demos/collab_editor`](demos/collab_editor) — one cell per **document**
-
-A collaborative rich text editor, [Lexical](https://lexical.dev) + [Yjs](https://yjs.dev) in
-the browser, one cell per document on the server. It exists to answer a question the console
-demo cannot: **is the cell boundary a choice, or is it just "customer" with extra steps?**
-
-How it works:
-
-1. A document id is the tenant. `CollabEditor.CellKey` resolves it to the cell `doc:<uuid>`,
-   which lands on disk as `doc~3A<uuid>.db` — the `:` is escaped, and the encoding is
-   reversible, so two keys can never share a file.
-2. A keystroke produces a Yjs update. The browser pushes it over the LiveView channel; the
-   server stores it in that document's `updates` table with a monotonic `seq`, then broadcasts
-   it to the other clients on the document.
-3. Cursors and names travel the same channel and are **stored nowhere** — ephemeral state is
-   not worth the cell's single connection.
-4. `Editing.compact/1` merges the log into a snapshot with
-   [`y_ex`](https://hex.pm/packages/y_ex) (a Rust NIF over `yrs`) and truncates what it
-   merged, all in one transaction on the cell.
-
-**Why this is a good argument for cells, stated narrowly.** Yjs is what makes concurrent
-editing correct — updates commute, so two people typing inside the same word converge
-character by character and nobody loses a keystroke. That would be true on Postgres too, and
-the demo says so. What a CRDT does *not* give you is a safe place to keep the log:
-
-> Compaction is `read the whole log; merge; write the snapshot; delete what was merged`. Two
-> nodes doing that concurrently can each merge a log the other is truncating, and an update
-> landing between one node's read and its delete is **gone** — a corruption the CRDT cannot
-> repair, because the update is no longer anywhere. On shared storage this needs a lock, a
-> lease, or a designated compactor.
-
-A cell is all three by construction: one connection per document (`pool_size: 1`), a write
-lock taken up front (`BEGIN IMMEDIATE`), one node holding the document (the lease), and one
-transaction, so a cell taken mid-compaction aborts rather than leaving a truncated log with no
-snapshot.
-
-**How that is proven.** 28 Elixir tests, including 15 concurrent appends racing 4 concurrent
-compactions on one document with every update asserted to survive — plus nine checks in two
-real Chromium tabs (`test/browser/convergence.mjs`) typing 30 characters each into the same
-paragraph simultaneously:
-
-```
-ok   both tabs converge on the same text — 60 chars
-ok   no keystrokes lost — 30 a + 30 b of 30 each
-ok   the other caret is rendered — {"attached":true,"carets":1,"peers":2}
-ok   compaction merged the log — Merged 63 updates
-ok   editing still propagates after compaction
-ok   a fresh tab loads the compacted document — 66 chars
-```
-
-That browser test earned its place: an earlier version of the demo synced whole blocks with
-last-writer-wins resolution, passed the entire Elixir suite, and still dropped keystrokes —
-because the failure only exists once two real editors are typing at once.
-
-Both demos run in CI (`.github/workflows/ci.yml`), so a change to the library that breaks one
-fails there rather than the next time somebody opens it. The editor demo runs its full suite
-plus the two-browser test against a real server; the console demo is compiled against the
-working tree, which is the failure that actually happens when the library renames something.
+- **One cell per tenant** — [`console`](demos/console). A multi-clinic healthcare SaaS, and
+  the core pitch: isolation you can check by reading the bytes off the disk, encryption at
+  rest, single-writer ownership, durability to the object store, and the deploy drain. Its
+  speed panel runs the same query against a properly indexed Postgres and against raw SQL, so
+  the comparison is allowed to lose.
+- **One cell per document** — [`collab_editor`](demos/collab_editor). A Lexical + Yjs
+  collaborative editor. The CRDT is what makes concurrent typing correct, and the demo says
+  so; what the cell provides is a safe home for the update log, because merging it into a
+  snapshot and truncating it is a read-modify-write that a CRDT cannot make safe. Checked in
+  two real browsers, not just in Elixir.
+- **One cell per user** — [`shroud`](demos/shroud). A profile app whose server cannot read
+  most of what it stores: the key is derived in the browser from a passkey, and deleting an
+  account means destroying key material rather than data. It is also where the fan-out cost
+  got measured — 200 cells for one feed page in 16.6 ms, and 8.9× slower when `max_resident`
+  is smaller than the page's working set.
+- **One cell per release channel** — [`rollout`](demos/rollout). Over-the-air updates: a
+  pointer written twice a week and read by every device on every check-in. The read/write
+  ratio at the opposite extreme from the editor, and where the read cache does the work —
+  roughly 0.34 µs a resolve, visualised live at up to 6,000 real check-ins a second.
+- **One cell per repository** — [`vcs`](demos/vcs). A small version control system with a Rust
+  CLI and an Ash server. The closest of the demos to what a durable object is for: objects and
+  the ref move in one transaction inside one cell, so Git's `main.lock` and its optimistic
+  retry are not needed, and the losing push is refused rather than reconciled.
 
 ## Documentation
 
 - [Design spec, staging plan, and verified constraints](docs/spec.md)
+- [Architecture decisions](docs/decisions/README.md) — one ADR per decision, including the
+  five that exist because something believed true was measured false
+- [Design docs](docs/design) — written before the work, stating what each piece proves,
+  its non-goals, and where it stops
 - [Deterministic simulation testing](docs/dst.md)
 - [What the demos prove](demos/README.md)
 - [Changelog](CHANGELOG.md)
