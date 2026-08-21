@@ -7,7 +7,10 @@ defmodule AshCell.CellKeyTest do
   boundary the whole design exists to hold, with nothing raising. So the property
   under test is injectivity, not readability.
   """
-  use ExUnit.Case, async: true
+  # Not async: the resolver lives in application env, so these tests mutate global
+  # configuration. Concurrent with any test that binds a cell, the NotABinary
+  # resolver below would make an unrelated bind raise.
+  use ExUnit.Case, async: false
 
   alias AshCell.CellKey
 

@@ -207,6 +207,25 @@ defmodule AshCell.Cell do
     %{state | last_ship_at: System.monotonic_time(:millisecond), ships: state.ships + 1}
   end
 
+  @impl true
+  def terminate(_reason, state) do
+    # Deregisters synchronously, which the registry's own cleanup does not.
+    # Registration is held via a `:via` tuple, so the registry drops the entry when
+    # it processes this process's DOWN message -- asynchronously. Until then
+    # `AshCell.Registry.lookup/1` still answers with a pid that is already dead, and
+    # `AshCell.Manager.close/2` has returned by that point, so a caller that closes
+    # a cell and immediately reopens it can be handed the corpse.
+    #
+    # `DynamicSupervisor.terminate_child/2` waits for this callback, so doing it
+    # here closes the window for every orderly shutdown. A cell that crashes never
+    # runs terminate, which is why `ensure_started/1` also checks.
+    Registry.unregister(AshCell.Registry, state.cell_key)
+  catch
+    # Terminating is not a place to raise. If the registry is already gone -- fleet
+    # shutdown tears it down in the same breath -- there is nothing to deregister.
+    _kind, _reason -> :ok
+  end
+
   defp file_size(path) do
     case File.stat(path) do
       {:ok, %{size: size}} -> size
