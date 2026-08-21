@@ -76,29 +76,37 @@ defmodule AshCell.Replicator do
   @doc """
   The highest txid in the object store for this cell, or `0` if never shipped.
 
-  Read once, at adoption. `0` rather than an error because "never shipped" is an
-  ordinary state for a new cell, and every caller would otherwise have to turn the
-  error into 0 itself.
+  Read once, at adoption. `{:ok, 0}` for a cell that has never shipped, because
+  that is an ordinary state and every caller would otherwise convert the same error
+  into 0 itself.
+
+  A store that cannot be listed is an **error**, never `{:ok, 0}`. Collapsing the
+  two would be the worst kind of wrong answer here: a cell with fifty snapshots
+  whose listing timed out would adopt a mark of 0 and start reclaiming txids that
+  already exist. Those writes are refused, so it is not data loss, but it presents
+  as a cell that inexplicably cannot snapshot, long after the transport blip that
+  caused it. Failing the claim instead means the cell stays unclaimed and the next
+  attempt retries -- unavailability that names its own cause.
   """
   def latest_txid(store, cell_key) do
-    case AshCell.ObjectStore.list(store, snapshot_prefix(cell_key)) do
-      {:ok, []} -> 0
-      {:ok, keys} -> keys |> Enum.map(&txid_of/1) |> Enum.max()
-      _ -> 0
+    with {:ok, txids} <- list_txids(store, cell_key) do
+      {:ok, Enum.max(txids, fn -> 0 end)}
     end
   end
 
   @doc "The highest txid present, or `{:error, :not_found}` if never shipped."
   def newest_snapshot(store, cell_key) do
-    case AshCell.ObjectStore.list(store, snapshot_prefix(cell_key)) do
-      {:ok, []} ->
-        {:error, :not_found}
+    with {:ok, txids} <- list_txids(store, cell_key) do
+      case txids do
+        [] -> {:error, :not_found}
+        txids -> {:ok, Enum.max(txids)}
+      end
+    end
+  end
 
-      {:ok, keys} ->
-        {:ok, keys |> Enum.map(&txid_of/1) |> Enum.max()}
-
-      other ->
-        other
+  defp list_txids(store, cell_key) do
+    with {:ok, keys} <- AshCell.ObjectStore.list(store, snapshot_prefix(cell_key)) do
+      {:ok, Enum.map(keys, &txid_of/1)}
     end
   end
 

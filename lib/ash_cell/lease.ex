@@ -110,16 +110,14 @@ defmodule AshCell.Lease do
   # the same values; only the winner's are ever used, and the winner is decided by
   # the conditional write. The counter is bumped after winning.
   defp take(store, cell_key, owner, expires_at, opts) do
-    generation = next_generation(store, cell_key)
-    txid = AshCell.Replicator.latest_txid(store, cell_key)
-
-    case write(store, cell_key, owner, expires_at, generation, txid, opts) do
-      {:ok, lease} ->
-        AshCell.ObjectStore.put(store, generation_key(cell_key), Integer.to_string(generation))
-        {:ok, lease}
-
-      other ->
-        other
+    # Both reads must succeed before the lease is written. A claim that cannot
+    # learn where the durability log has got to must not be granted: the alternative
+    # is a new owner that starts reclaiming txids its predecessors already used.
+    with {:ok, generation} <- next_generation(store, cell_key),
+         {:ok, txid} <- AshCell.Replicator.latest_txid(store, cell_key),
+         {:ok, lease} <- write(store, cell_key, owner, expires_at, generation, txid, opts) do
+      AshCell.ObjectStore.put(store, generation_key(cell_key), Integer.to_string(generation))
+      {:ok, lease}
     end
   end
 
@@ -127,9 +125,12 @@ defmodule AshCell.Lease do
   # ownership changes even when nobody wrote in between.
   defp next_generation(store, cell_key) do
     case AshCell.ObjectStore.get(store, generation_key(cell_key)) do
-      {:ok, body, _etag} -> String.to_integer(String.trim(body)) + 1
-      {:error, :not_found} -> 1
-      _ -> 1
+      {:ok, body, _etag} -> {:ok, String.to_integer(String.trim(body)) + 1}
+      # No counter yet is the first claim, not a failure.
+      {:error, :not_found} -> {:ok, 1}
+      # Anything else must not be read as "start again at 1", which would hand a
+      # generation back out and unfence whoever still holds it.
+      other -> other
     end
   end
 

@@ -100,11 +100,29 @@ defmodule AshCell.FencingTest do
       assert second.txid == 2
     end
 
-    test "latest_txid reports 0 rather than an error for a cell never shipped",
-         %{store: store} do
+    test "reports 0 for a cell that has never shipped", %{store: store} do
       # Ordinary state for a new cell, so every caller converting an error into 0
       # would be the same code written many times.
-      assert Replicator.latest_txid(store, unique_cell("adopt_empty")) == 0
+      assert {:ok, 0} = Replicator.latest_txid(store, unique_cell("adopt_empty"))
+    end
+
+    test "fails the claim when the store cannot be listed", %{store: store} do
+      # Never {:ok, 0}. A cell with snapshots whose listing failed would otherwise
+      # adopt a mark of 0 and start reclaiming txids that already exist.
+      #
+      # A missing bucket rather than an unreachable host: same branch, and it
+      # answers immediately instead of spending the request's full retry budget.
+      # Revoked credentials and a deleted bucket are the realistic versions of
+      # this anyway.
+      broken = %{store | bucket: "ashcell-no-such-bucket"}
+      cell = unique_cell("adopt_unlistable")
+
+      assert {:error, _} = Replicator.latest_txid(broken, cell)
+      assert {:error, _} = Lease.claim(broken, cell, "node-a", ttl_ms: 60_000)
+
+      # And nothing was written, so a later claim against a healthy store is clean.
+      assert {:ok, %Lease{generation: 1, txid: 0}} =
+               Lease.claim(store, cell, "node-a", ttl_ms: 60_000)
     end
   end
 

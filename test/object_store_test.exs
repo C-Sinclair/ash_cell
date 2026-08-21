@@ -148,7 +148,7 @@ defmodule AshCell.ObjectStoreTest do
       write(tenant, ["Added Later"])
       {:ok, _} = Replicator.snapshot(store, tenant, 2)
 
-      assert 2 = Replicator.latest_txid(store, tenant)
+      assert {:ok, 2} = Replicator.latest_txid(store, tenant)
 
       {:ok, _} = Replicator.restore(store, tenant, 1)
       assert ["Only Ada"] = read(tenant)
