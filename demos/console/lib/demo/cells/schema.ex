@@ -13,7 +13,7 @@ defmodule Demo.Cells.Schema do
   """
   use AshCell.Migrator
 
-  migration 1, """
+  migration(1, """
   CREATE TABLE patients (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -21,32 +21,32 @@ defmodule Demo.Cells.Schema do
     birth_year INTEGER,
     risk_score INTEGER DEFAULT 0
   )
-  """
+  """)
 
-  migration 2, """
+  migration(2, """
   CREATE TABLE encounters (
     id TEXT PRIMARY KEY,
     patient_id TEXT,
     reason TEXT,
     occurred_on TEXT
   )
-  """
+  """)
 
-  migration 3, """
+  migration(3, """
   CREATE TABLE observations (
     id TEXT PRIMARY KEY,
     encounter_id TEXT,
     code TEXT,
     value INTEGER
   )
-  """
+  """)
 
-  migration 4, fn repo_pid ->
+  migration(4, fn repo_pid ->
     for sql <- [
           "CREATE INDEX encounters_patient ON encounters(patient_id)",
           "CREATE INDEX observations_encounter ON observations(encounter_id)"
         ] do
       Ecto.Adapters.SQL.query!(repo_pid, sql, [])
     end
-  end
+  end)
 end

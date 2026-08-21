@@ -9,25 +9,30 @@ defmodule Demo.Global.Clinic do
   use Ash.Resource, domain: Demo.Global, data_layer: AshPostgres.DataLayer
 
   postgres do
-    table "clinics"
-    repo Demo.Repo
+    table("clinics")
+    repo(Demo.Repo)
   end
 
   attributes do
-    attribute :id, :string, primary_key?: true, allow_nil?: false, public?: true
-    attribute :name, :string, allow_nil?: false, public?: true
-    attribute :region, :string, public?: true
-    attribute :plan, :string, public?: true
+    attribute(:id, :string, primary_key?: true, allow_nil?: false, public?: true)
+    attribute(:name, :string, allow_nil?: false, public?: true)
+    attribute(:region, :string, public?: true)
+    attribute(:plan, :string, public?: true)
   end
 
   actions do
-    defaults [:read, :destroy, create: [:id, :name, :region, :plan], update: [:name, :region, :plan]]
+    defaults([
+      :read,
+      :destroy,
+      create: [:id, :name, :region, :plan],
+      update: [:name, :region, :plan]
+    ])
   end
 
   code_interface do
-    define :create
-    define :read
-    define :destroy
+    define(:create)
+    define(:read)
+    define(:destroy)
   end
 end
 
@@ -36,6 +41,6 @@ defmodule Demo.Global do
   use Ash.Domain
 
   resources do
-    resource Demo.Global.Clinic
+    resource(Demo.Global.Clinic)
   end
 end

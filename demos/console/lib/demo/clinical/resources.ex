@@ -12,20 +12,20 @@ defmodule Demo.Clinical.Patient do
     extensions: [AshCell.Resource]
 
   sqlite do
-    table "patients"
-    repo Demo.CellRepo
+    table("patients")
+    repo(Demo.CellRepo)
   end
 
   multitenancy do
-    strategy :context
+    strategy(:context)
   end
 
   attributes do
-    uuid_primary_key :id
-    attribute :name, :string, allow_nil?: false, public?: true
-    attribute :mrn, :string, public?: true
-    attribute :birth_year, :integer, public?: true
-    attribute :risk_score, :integer, public?: true, default: 0
+    uuid_primary_key(:id)
+    attribute(:name, :string, allow_nil?: false, public?: true)
+    attribute(:mrn, :string, public?: true)
+    attribute(:birth_year, :integer, public?: true)
+    attribute(:risk_score, :integer, public?: true, default: 0)
   end
 
   relationships do
@@ -33,20 +33,20 @@ defmodule Demo.Clinical.Patient do
   end
 
   actions do
-    defaults [
+    defaults([
       :read,
       :destroy,
       create: [:name, :mrn, :birth_year, :risk_score],
       update: [:name, :mrn, :birth_year, :risk_score]
-    ]
+    ])
   end
 
   code_interface do
-    define :create
-    define :read
-    define :update
-    define :destroy
-    define :get_by_id, action: :read, get_by: [:id]
+    define(:create)
+    define(:read)
+    define(:update)
+    define(:destroy)
+    define(:get_by_id, action: :read, get_by: [:id])
   end
 end
 
@@ -58,18 +58,18 @@ defmodule Demo.Clinical.Encounter do
     extensions: [AshCell.Resource]
 
   sqlite do
-    table "encounters"
-    repo Demo.CellRepo
+    table("encounters")
+    repo(Demo.CellRepo)
   end
 
   multitenancy do
-    strategy :context
+    strategy(:context)
   end
 
   attributes do
-    uuid_primary_key :id
-    attribute :reason, :string, public?: true
-    attribute :occurred_on, :date, public?: true
+    uuid_primary_key(:id)
+    attribute(:reason, :string, public?: true)
+    attribute(:occurred_on, :date, public?: true)
   end
 
   relationships do
@@ -78,12 +78,12 @@ defmodule Demo.Clinical.Encounter do
   end
 
   actions do
-    defaults [:read, :destroy, create: [:reason, :occurred_on, :patient_id], update: [:reason]]
+    defaults([:read, :destroy, create: [:reason, :occurred_on, :patient_id], update: [:reason]])
   end
 
   code_interface do
-    define :create
-    define :read
+    define(:create)
+    define(:read)
   end
 end
 
@@ -95,18 +95,18 @@ defmodule Demo.Clinical.Observation do
     extensions: [AshCell.Resource]
 
   sqlite do
-    table "observations"
-    repo Demo.CellRepo
+    table("observations")
+    repo(Demo.CellRepo)
   end
 
   multitenancy do
-    strategy :context
+    strategy(:context)
   end
 
   attributes do
-    uuid_primary_key :id
-    attribute :code, :string, public?: true
-    attribute :value, :integer, public?: true
+    uuid_primary_key(:id)
+    attribute(:code, :string, public?: true)
+    attribute(:value, :integer, public?: true)
   end
 
   relationships do
@@ -114,12 +114,12 @@ defmodule Demo.Clinical.Observation do
   end
 
   actions do
-    defaults [:read, :destroy, create: [:code, :value, :encounter_id]]
+    defaults([:read, :destroy, create: [:code, :value, :encounter_id]])
   end
 
   code_interface do
-    define :create
-    define :read
+    define(:create)
+    define(:read)
   end
 end
 
@@ -131,8 +131,8 @@ defmodule Demo.Clinical do
   use Ash.Domain
 
   resources do
-    resource Demo.Clinical.Patient
-    resource Demo.Clinical.Encounter
-    resource Demo.Clinical.Observation
+    resource(Demo.Clinical.Patient)
+    resource(Demo.Clinical.Encounter)
+    resource(Demo.Clinical.Observation)
   end
 end

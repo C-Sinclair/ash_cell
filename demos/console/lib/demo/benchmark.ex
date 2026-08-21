@@ -98,7 +98,9 @@ defmodule Demo.Benchmark do
 
   def postgres_point_read(clinic_id) do
     time(fn ->
-      Demo.Repo.query!("SELECT id, name FROM pg_patients WHERE clinic_id = $1 LIMIT 1", [clinic_id])
+      Demo.Repo.query!("SELECT id, name FROM pg_patients WHERE clinic_id = $1 LIMIT 1", [
+        clinic_id
+      ])
     end)
   end
 

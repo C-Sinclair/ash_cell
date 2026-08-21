@@ -128,7 +128,8 @@ defmodule Demo.Cells.Vault do
       "demo-root-secret-not-for-production"
   end
 
-  defp revocation_path, do: Path.join(Application.get_env(:demo, :cell_dir, "priv/cells"), ".revoked")
+  defp revocation_path,
+    do: Path.join(Application.get_env(:demo, :cell_dir, "priv/cells"), ".revoked")
 
   defp load_revocations do
     case File.read(revocation_path()) do

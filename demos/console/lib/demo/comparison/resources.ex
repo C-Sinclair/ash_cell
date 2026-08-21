@@ -13,17 +13,17 @@ defmodule Demo.Comparison.PgPatient do
   use Ash.Resource, domain: Demo.Comparison, data_layer: AshPostgres.DataLayer
 
   postgres do
-    table "pg_patients"
-    repo Demo.Repo
+    table("pg_patients")
+    repo(Demo.Repo)
   end
 
   attributes do
-    uuid_primary_key :id, writable?: true
-    attribute :clinic_id, :string, public?: true
-    attribute :name, :string, public?: true
-    attribute :mrn, :string, public?: true
-    attribute :birth_year, :integer, public?: true
-    attribute :risk_score, :integer, public?: true
+    uuid_primary_key(:id, writable?: true)
+    attribute(:clinic_id, :string, public?: true)
+    attribute(:name, :string, public?: true)
+    attribute(:mrn, :string, public?: true)
+    attribute(:birth_year, :integer, public?: true)
+    attribute(:risk_score, :integer, public?: true)
   end
 
   relationships do
@@ -31,7 +31,7 @@ defmodule Demo.Comparison.PgPatient do
   end
 
   actions do
-    defaults [:read]
+    defaults([:read])
   end
 end
 
@@ -40,15 +40,15 @@ defmodule Demo.Comparison.PgEncounter do
   use Ash.Resource, domain: Demo.Comparison, data_layer: AshPostgres.DataLayer
 
   postgres do
-    table "pg_encounters"
-    repo Demo.Repo
+    table("pg_encounters")
+    repo(Demo.Repo)
   end
 
   attributes do
-    uuid_primary_key :id, writable?: true
-    attribute :clinic_id, :string, public?: true
-    attribute :reason, :string, public?: true
-    attribute :occurred_on, :date, public?: true
+    uuid_primary_key(:id, writable?: true)
+    attribute(:clinic_id, :string, public?: true)
+    attribute(:reason, :string, public?: true)
+    attribute(:occurred_on, :date, public?: true)
   end
 
   relationships do
@@ -57,7 +57,7 @@ defmodule Demo.Comparison.PgEncounter do
   end
 
   actions do
-    defaults [:read]
+    defaults([:read])
   end
 end
 
@@ -66,15 +66,15 @@ defmodule Demo.Comparison.PgObservation do
   use Ash.Resource, domain: Demo.Comparison, data_layer: AshPostgres.DataLayer
 
   postgres do
-    table "pg_observations"
-    repo Demo.Repo
+    table("pg_observations")
+    repo(Demo.Repo)
   end
 
   attributes do
-    uuid_primary_key :id, writable?: true
-    attribute :clinic_id, :string, public?: true
-    attribute :code, :string, public?: true
-    attribute :value, :integer, public?: true
+    uuid_primary_key(:id, writable?: true)
+    attribute(:clinic_id, :string, public?: true)
+    attribute(:code, :string, public?: true)
+    attribute(:value, :integer, public?: true)
   end
 
   relationships do
@@ -82,7 +82,7 @@ defmodule Demo.Comparison.PgObservation do
   end
 
   actions do
-    defaults [:read]
+    defaults([:read])
   end
 end
 
@@ -91,8 +91,8 @@ defmodule Demo.Comparison do
   use Ash.Domain
 
   resources do
-    resource Demo.Comparison.PgPatient
-    resource Demo.Comparison.PgEncounter
-    resource Demo.Comparison.PgObservation
+    resource(Demo.Comparison.PgPatient)
+    resource(Demo.Comparison.PgEncounter)
+    resource(Demo.Comparison.PgObservation)
   end
 end
