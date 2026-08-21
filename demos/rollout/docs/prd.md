@@ -153,12 +153,33 @@ node, no mailbox to serialise on. Its one drawback is that *writes* trigger a gl
 scan, which is why it is the wrong tool for almost every cache and the right one here.
 Writes are deploys.
 
-| Strategy | Where reads happen | Freshness | New failure mode |
-|---|---|---|---|
-| `:owner` | owner node, straight to SQLite | linearizable | none — the honest default |
-| `:cached` | owner node, from `persistent_term` | linearizable | none |
-| `:replicated` | any node, local cache invalidated by broadcast | **bounded staleness** | stale reads for the broadcast window |
-| `:leased` | any node, holding a read lease | linearizable | writes block on unreachable readers |
+| Strategy | Where reads happen | Freshness | New failure mode | Status |
+|---|---|---|---|---|
+| `:owner` | owner node, straight to SQLite | linearizable | none — the honest default | built (it is what the library always did) |
+| `:cached` | owner node, from `persistent_term` | linearizable | none | **built** — `AshCell.ReadCache` |
+| `:replicated` | any node, local cache invalidated by broadcast | **bounded staleness** | stale reads for the broadcast window | designed, not built |
+| `:leased` | any node, holding a read lease | linearizable | writes block on unreachable readers | designed, not built |
+
+### Not a declared option, and why
+
+The first plan was a `read_strategy` enum on the resource. `:owner` and `:cached`
+turned out not to need one, because you cannot transparently cache an arbitrary Ash
+query: what is cacheable is a *named projection* of the cell, and naming it is the
+application's job. So `:cached` is `AshCell.ReadCache.read(cell, :manifest, fun)` at
+the call site, and `:owner` is what you get by not calling it.
+
+Shipping the enum anyway would have been a declaration with nothing behind it for
+half its values — infrastructure for an answer we do not have. The enum becomes real
+when `:replicated` lands, because at that point where the read happens genuinely is
+a property of the deployment rather than of the call.
+
+Measured, once it was built (`bench/resolve.exs`, 32 concurrent devices × 200
+check-ins, median of five):
+
+| | Per resolve | Throughput |
+|---|---|---|
+| Uncached — two Ash reads through the framework | 207 µs | 4.8k resolves/s |
+| Cached — `persistent_term` | **0.18 µs** | **5.7M resolves/s** |
 
 `:replicated` is what most OTA services actually want — a 5 ms window on a rollback is not
 a real problem — and it must be labelled as not linearizable so that choosing it is a
@@ -184,13 +205,18 @@ is about whether you are permitted to trust the local copy. On the same replica 
 same file, one resource can demand a valid read lease while another reads the local copy
 immediately. Same bytes, different admission rule.
 
-The seam already exists in the fork. `bind_tenant/3` (`ash_sqlite/lib/data_layer.ex:2302`)
-receives the resource, and its call sites distinguish reads (`:609`, `:624`) from writes
-(`:1409`, `:1561`, `:1621`) and transactions (`:2252`). Extending
-`AshSqlite.TenantBinder.bind/2` to carry the resource and the usage is a narrow,
-upstreamable change with exactly one implementor (`AshCell.Binder`). **Not to be made
-until this demo needs it** — per repo convention, the demo forces the change rather than
-the change anticipating the demo.
+The seam is now in the fork. `AshSqlite.TenantBinder.bind/3` carries the resource and
+a `:usage` of `:read`, `:write`, or `:transaction`, because only the data layer can say
+which — by the time a binder sees a statement the distinction has been compiled into SQL
+it does not parse. That is what lets `AshCell.Binder` bracket writes for the read cache
+and leave reads alone, and it is what a per-resource read admission rule would be built
+on.
+
+One correction to record: `AshCell.transaction/2` needs its own bracket, because it
+opens its transaction *below* the data layer. The binder sees each statement inside it as
+its own write and would close the bracket at the last statement rather than at the
+commit — a gap wide enough for a reader to publish a projection built from uncommitted
+state. The integration test caught it; it was not reasoned out in advance.
 
 The coupling that cannot be escaped: **the strictest resource in a cell sets the write
 cost for the whole cell.** A commit is per-file, so if any resource in the cell is
