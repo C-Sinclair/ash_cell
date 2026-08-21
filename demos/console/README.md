@@ -5,7 +5,7 @@ encrypted SQLite file owned by one process at a time; a global Postgres holds th
 registry. Six panels, each one making a single claim you can check without trusting the
 application.
 
-This is the demo the numbers in the [workspace README](../../../README.md) come from.
+This is the demo the numbers in the [library README](../../README.md) come from.
 
 ## What it proves
 

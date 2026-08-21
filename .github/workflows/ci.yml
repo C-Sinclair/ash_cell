@@ -116,6 +116,9 @@ jobs:
           EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
         run: |
           mix deps.get
+          # See the note in the demo jobs: forcing exqlite alone on a fresh checkout kills
+          # Mix's deps partition, because exqlite's build dependencies are not compiled yet.
+          mix deps.compile
           mix deps.compile exqlite --force
 
       - name: Check SQLCipher is linked
@@ -187,7 +190,14 @@ jobs:
       # SQLCipher and the cache key cannot see which one it is.
       - name: Compile exqlite against SQLCipher
         working-directory: ash_cell/demos/collab_editor
-        run: mix deps.compile exqlite --force
+        # `mix deps.compile` first is load-bearing, not belt-and-braces. On a fresh checkout
+        # `mix deps.compile exqlite --force` fans out across Mix's parallel deps partition, and
+        # the workers cannot find exqlite's own build dependencies -- `elixir_make`, `telemetry`
+        # -- because nothing has compiled them yet, so the partition dies and takes the build
+        # with it. Compiling everything once puts them in place.
+        run: |
+          mix deps.compile
+          mix deps.compile exqlite --force
 
       - name: Check formatting
         working-directory: ash_cell/demos/collab_editor
@@ -354,7 +364,14 @@ jobs:
 
       - name: Compile exqlite against SQLCipher
         working-directory: ash_cell/demos/rollout
-        run: mix deps.compile exqlite --force
+        # `mix deps.compile` first is load-bearing, not belt-and-braces. On a fresh checkout
+        # `mix deps.compile exqlite --force` fans out across Mix's parallel deps partition, and
+        # the workers cannot find exqlite's own build dependencies -- `elixir_make`, `telemetry`
+        # -- because nothing has compiled them yet, so the partition dies and takes the build
+        # with it. Compiling everything once puts them in place.
+        run: |
+          mix deps.compile
+          mix deps.compile exqlite --force
 
       - name: Check formatting
         working-directory: ash_cell/demos/rollout
@@ -436,7 +453,14 @@ jobs:
 
       - name: Compile exqlite against SQLCipher
         working-directory: ash_cell/demos/vcs
-        run: mix deps.compile exqlite --force
+        # `mix deps.compile` first is load-bearing, not belt-and-braces. On a fresh checkout
+        # `mix deps.compile exqlite --force` fans out across Mix's parallel deps partition, and
+        # the workers cannot find exqlite's own build dependencies -- `elixir_make`, `telemetry`
+        # -- because nothing has compiled them yet, so the partition dies and takes the build
+        # with it. Compiling everything once puts them in place.
+        run: |
+          mix deps.compile
+          mix deps.compile exqlite --force
 
       # The e2e script asserts the cell file carries no plaintext, which is only true with
       # SQLCipher linked in. A missing variable above fails silently in exqlite, so assert it
@@ -564,7 +588,14 @@ jobs:
 
       - name: Compile exqlite against SQLCipher
         working-directory: ash_cell/demos/shroud
-        run: mix deps.compile exqlite --force
+        # `mix deps.compile` first is load-bearing, not belt-and-braces. On a fresh checkout
+        # `mix deps.compile exqlite --force` fans out across Mix's parallel deps partition, and
+        # the workers cannot find exqlite's own build dependencies -- `elixir_make`, `telemetry`
+        # -- because nothing has compiled them yet, so the partition dies and takes the build
+        # with it. Compiling everything once puts them in place.
+        run: |
+          mix deps.compile
+          mix deps.compile exqlite --force
 
       - name: Check SQLCipher is linked
         working-directory: ash_cell/demos/shroud
