@@ -2,55 +2,66 @@ defmodule AshCell.Sim.Protocol do
   @moduledoc """
   The coordination protocol as pure decisions over a world.
 
-  Stage 0 of `docs/dst.md`: enough of the protocol to state the invariants
-  against, driven by scripted sequences rather than a scheduler. If the
-  invariants cannot be expressed cleanly here, that is a finding about the design
-  — and it arrives before any refactor of the real `Manager` and `Drain`.
-
   `variant` selects a deliberately broken implementation. That is not a test
   affordance; it is how we find out whether the invariants can detect anything at
   all. An invariant suite that has never caught a mutant is indistinguishable
   from one that cannot.
+
+  ## This models what production does, which is not what it used to model
+
+  The first version of this file acknowledged a write only after a conditional
+  durability write succeeded, and invariant #2 — "anything acknowledged is
+  recoverable from the store" — held trivially. That was a simulation of a system
+  we had not built. The real one acknowledges on local fsync and ships separately,
+  so writing and shipping are two steps here, and the gap between them is where the
+  interesting behaviour lives.
+
+  Restating it that way is what turned invariant #2 from a tautology into three
+  distinct claims, one of which production does not satisfy. See
+  `AshCell.Sim.Invariants`.
   """
 
   alias AshCell.Sim.{Invariants, Store, World}
 
-  @doc "Node `id` attempts to claim `tenant`. Ownership is one conditional write."
-  def claim(world, id, tenant, variant \\ :correct) do
+  @doc "Node `id` attempts to claim `cell`. Ownership is one conditional write."
+  def claim(world, id, cell, variant \\ :correct) do
     node = World.node(world, id)
 
-    # Generation comes from the lease, not from counting snapshots.
+    # Generation comes from a counter that outlives the lease, not from the lease
+    # body and not from counting snapshots.
     #
-    # Stage 0 found this: deriving it from the number of snapshots gives two
-    # successive owners the same generation whenever nobody wrote in between, and
-    # a generation that repeats is a fence that does not fence. The lease is the
-    # only thing that is definitely written on every ownership change, so it is
-    # the only correct place to allocate from.
-    generation = next_generation(world, tenant)
+    # Stage 0 found this and the real code had the same bug: releasing a lease
+    # deletes it, so a generation derived from it restarts at 1 and two successive
+    # owners get the same number. A generation that repeats is a fence that does
+    # not fence.
+    generation = next_generation(world, cell)
 
-    case Store.put(world.store, lease_key(tenant), {id, generation}, if_none_match: true) do
+    case Store.put(world.store, lease_key(cell), {id, generation}, if_none_match: true) do
       {{:ok, _etag}, store} ->
-        store = bump_generation(store, tenant, generation)
+        store = bump_generation(store, cell, generation)
 
         node = %{
           node
-          | held: Map.put(node.held, tenant, generation),
-            won: [{tenant, generation} | node.won],
-            local_generation: Map.put(node.local_generation, tenant, generation),
-            # A new owner hydrates, so it knows the high-water mark. A fenced
-            # writer does not -- which is precisely why its next write collides.
-            local_txid: Map.put(node.local_txid, tenant, highest_txid(world, tenant))
+          | held: Map.put(node.held, cell, generation),
+            won: [{cell, generation} | node.won],
+            local_generation: Map.put(node.local_generation, cell, generation),
+            # Adopting a cell means restoring it and learning where its log has got
+            # to. A fenced writer does not, which is precisely why its next
+            # shipment collides.
+            shipped_txid: Map.put(node.shipped_txid, cell, highest_txid(world, cell)),
+            values: Map.put(node.values, cell, recoverable(world, cell)),
+            fenced: Map.delete(node.fenced, cell)
         }
 
         world |> Map.put(:store, store) |> World.put_node(node)
 
       {{:error, :precondition_failed}, store} when variant == :ignore_lease_refusal ->
         # Mutant: treats a refused claim as success. Two nodes then believe they
-        # own the same tenant at the same generation.
+        # own the same cell at the same generation.
         node = %{
           node
-          | held: Map.put(node.held, tenant, generation),
-            local_generation: Map.put(node.local_generation, tenant, generation)
+          | held: Map.put(node.held, cell, generation),
+            local_generation: Map.put(node.local_generation, cell, generation)
         }
 
         world |> Map.put(:store, store) |> World.put_node(node)
@@ -61,104 +72,82 @@ defmodule AshCell.Sim.Protocol do
   end
 
   @doc """
-  Node `id` writes to `tenant` and acknowledges the caller.
+  Node `id` writes to `cell` and acknowledges the caller.
 
-  Durability is a conditional write keyed by generation: a fenced writer finds its
-  generation already taken and must not ack.
+  **Acknowledged on local fsync**, with nothing sent to the store. This is what
+  production does and it is the whole reason the durability story is a bounded loss
+  rather than none: between here and the next `ship/4` the write exists on one
+  disk.
+
+  A node that has *learned* it is fenced must refuse rather than acknowledge. That
+  is the one thing this step is strict about, because a node still answering callers
+  for a cell it knows it does not own is manufacturing writes that are already lost.
   """
-  def write(world, id, tenant, value, variant \\ :correct) do
+  def write(world, id, cell, value, variant \\ :correct) do
     node = World.node(world, id)
-    generation = Map.get(node.local_generation, tenant)
 
     cond do
-      is_nil(generation) ->
+      not Map.has_key?(node.local_generation, cell) ->
         world
 
-      variant == :ack_before_durable ->
-        # Mutant: acknowledges first and ships afterwards. Nothing fails at the
-        # time; the loss surfaces later, to a user.
-        World.ack(world, tenant, Map.get(node.local_txid, tenant, 0) + 1, value)
+      # Mutant: keeps serving after a refused shipment told it the truth. This is
+      # the shape of the real gap -- see the moduledoc of
+      # `Invariants.fenced_node_stops_acknowledging/1`.
+      Map.get(node.fenced, cell) && variant != :keeps_serving_when_fenced ->
+        world
 
       true ->
-        # Durability is keyed by a per-tenant transaction number that every owner
-        # shares, NOT by the lease generation.
-        #
-        # Stage 0 found this, and it is the sharpest finding here. Keyed by
-        # generation, a fenced writer at generation 1 writes to a key its
-        # successor at generation 2 never touches: the write succeeds, the caller
-        # is acked, and the data is superseded the moment the successor snapshots.
-        # Nothing is refused, so nothing is fenced. Generation-keyed durability
-        # fences only against a successor that reuses the same generation, which
-        # is exactly what a successor never does.
-        #
-        # Sharing one txid namespace is what makes the conditional write bite:
-        # both owners compute the same next number, one wins, the loser discovers
-        # it before acking. This is why celld keys LTX segments by TXID rather
-        # than by epoch.
-        txid = Map.get(node.local_txid, tenant, 0) + 1
-        key = Invariants.snapshot_key(tenant, txid)
+        values = Map.update(node.values, cell, MapSet.new([value]), &MapSet.put(&1, value))
 
-        case Store.put(world.store, key, value, if_none_match: true) do
-          {{:ok, _etag}, store} ->
-            node = %{
-              node
-              | snapshotted: Map.put(node.snapshotted, tenant, generation),
-                local_txid: Map.put(node.local_txid, tenant, txid)
-            }
-
-            world
-            |> Map.put(:store, store)
-            |> World.put_node(node)
-            |> World.ack(tenant, txid, value)
-
-          {{:error, :precondition_failed}, store} ->
-            # Fenced. Discovered at the only moment that matters: before acking.
-            Map.put(world, :store, store)
-
-          {{:error, _}, store} ->
-            Map.put(world, :store, store)
-        end
+        world
+        |> World.put_node(%{node | values: values})
+        |> World.ack(id, cell, value)
     end
   end
 
   @doc """
-  Node `id` drains `tenant`: snapshot, then release.
+  Node `id` ships `cell` to the store: claim the next txid, put the whole database.
 
-  Order is the whole point. `:release_before_snapshot` inverts it.
+  Keyed by txid from a namespace every owner shares, so two owners compute the same
+  next number, one wins, and the loser learns it has been fenced. Keyed by
+  generation this never collided at all, because a successor always takes a new
+  generation and therefore writes a key its predecessor never touches.
   """
-  def drain(world, id, tenant, variant \\ :correct) do
-    case variant do
-      :release_before_snapshot ->
-        world |> release(id, tenant) |> snapshot(id, tenant)
-
-      _ ->
-        world |> snapshot(id, tenant) |> release(id, tenant)
-    end
-  end
-
-  @doc false
-  def snapshot_step(world, id, tenant), do: snapshot(world, id, tenant)
-
-  @doc false
-  def release_step(world, id, tenant), do: release(world, id, tenant)
-
-  defp snapshot(world, id, tenant) do
+  def ship(world, id, cell, variant \\ :correct) do
     node = World.node(world, id)
-    generation = Map.get(node.local_generation, tenant)
 
-    if is_nil(generation) or Map.get(node.snapshotted, tenant, 0) >= generation do
+    if not Map.has_key?(node.local_generation, cell) do
       world
     else
-      key = Invariants.snapshot_key(tenant, Map.get(node.local_txid, tenant, 0) + 1)
+      # Mutant: reads the high-water mark from the store instead of trusting the
+      # local counter -- the "optimisation" that looks like it cannot hurt. It
+      # hands a displaced node a txid nobody has taken, so its conditional write
+      # succeeds, and because snapshots are whole files it publishes an older
+      # database over a newer one. This is what `AshCell.Replicator`'s moduledoc
+      # means by "the fence works precisely because a fenced writer's counter is
+      # stale".
+      txid =
+        case variant do
+          :reread_high_water -> highest_txid(world, cell) + 1
+          _ -> Map.get(node.shipped_txid, cell, 0) + 1
+        end
 
-      case Store.put(world.store, key, "snapshot", if_none_match: true) do
-        {{:ok, _}, store} ->
-          node = %{
-            node
-            | snapshotted: Map.put(node.snapshotted, tenant, generation),
-              local_txid:
-                Map.put(node.local_txid, tenant, Map.get(node.local_txid, tenant, 0) + 1)
-          }
+      contents = Map.get(node.values, cell, MapSet.new())
+
+      case Store.put(world.store, Invariants.snapshot_key(cell, txid), contents,
+             if_none_match: true
+           ) do
+        {{:ok, _etag}, store} ->
+          node = %{node | shipped_txid: Map.put(node.shipped_txid, cell, txid)}
+          world |> Map.put(:store, store) |> World.put_node(node)
+
+        {{:error, :precondition_failed}, store} ->
+          # Fenced, and discovered at the only moment that offers a signal at all.
+          # Recording it is what lets a later `write/5` refuse.
+          node =
+            if variant == :ignore_fence,
+              do: node,
+              else: %{node | fenced: Map.put(node.fenced, cell, true)}
 
           world |> Map.put(:store, store) |> World.put_node(node)
 
@@ -168,16 +157,67 @@ defmodule AshCell.Sim.Protocol do
     end
   end
 
-  defp release(world, id, tenant) do
+  @doc """
+  Node `id` drains `cell`: ship, then release.
+
+  Order is the whole point. `:release_before_ship` inverts it.
+  """
+  def drain(world, id, cell, variant \\ :correct) do
+    case variant do
+      :release_before_ship ->
+        world |> release(id, cell) |> ship(id, cell) |> World.drained(id, cell)
+
+      _ ->
+        world |> ship(id, cell) |> then(&release_if_shipped(&1, id, cell))
+    end
+  end
+
+  @doc """
+  The lease's TTL elapses, making `cell` claimable again.
+
+  An explicit step because the simulation has no clock. A crash does not release a
+  lease -- that is the whole cost of a node dying rather than draining, and the
+  handoff tests measure it against a real bucket -- so a successor cannot claim
+  until this happens.
+  """
+  def expire_lease(world, cell) do
+    {_, store} = Store.delete(world.store, lease_key(cell))
+    Map.put(world, :store, store)
+  end
+
+  @doc false
+  def ship_step(world, id, cell), do: ship(world, id, cell)
+
+  @doc false
+  def release_step(world, id, cell), do: release(world, id, cell)
+
+  # The lease is deliberately kept when the shipment failed. Releasing after a
+  # failed ship invites a successor to claim the cell and resume from an older
+  # snapshot while the newest values are still only on this disk.
+  defp release_if_shipped(world, id, cell) do
     node = World.node(world, id)
-    {_, store} = Store.delete(world.store, lease_key(tenant))
+
+    if Map.get(node.fenced, cell) do
+      world
+    else
+      world |> release(id, cell) |> World.drained(id, cell)
+    end
+  end
+
+  defp release(world, id, cell) do
+    node = World.node(world, id)
+    {_, store} = Store.delete(world.store, lease_key(cell))
 
     world
     |> Map.put(:store, store)
-    |> World.put_node(%{node | held: Map.delete(node.held, tenant)})
+    |> World.put_node(%{node | held: Map.delete(node.held, cell)})
   end
 
-  @doc "Node `id` loses everything it had not persisted."
+  @doc """
+  Node `id` loses everything it had not shipped.
+
+  The hard kill. Local values go with it; the store keeps whatever was shipped.
+  """
   def crash(world, id) do
     node = World.node(world, id)
 
@@ -186,35 +226,51 @@ defmodule AshCell.Sim.Protocol do
       | held: %{},
         won: [],
         local_generation: %{},
-        local_txid: %{},
-        snapshotted: %{}
+        shipped_txid: %{},
+        values: %{},
+        fenced: %{}
     })
   end
 
-  defp lease_key(tenant), do: "cells/#{tenant}/lease.json"
+  @doc "Everything recoverable for `cell`: the contents of its newest snapshot."
+  def recoverable(world, cell) do
+    case highest_txid(world, cell) do
+      0 ->
+        MapSet.new()
+
+      txid ->
+        case Store.get(world.store, Invariants.snapshot_key(cell, txid)) do
+          {{:ok, contents, _etag}, _store} -> contents
+          _ -> MapSet.new()
+        end
+    end
+  end
+
+  defp lease_key(cell), do: "cells/#{cell}/lease.json"
 
   # Monotonic across ownership changes, including changes with no writes between
   # them. Persisted in a counter object so it survives every node forgetting.
-  defp next_generation(world, tenant) do
-    case Store.get(world.store, generation_key(tenant)) do
+  defp next_generation(world, cell) do
+    case Store.get(world.store, generation_key(cell)) do
       {{:ok, n, _etag}, _store} -> n + 1
       {{:error, :not_found}, _store} -> 1
     end
   end
 
-  defp bump_generation(store, tenant, generation) do
-    {_result, store} = Store.put(store, generation_key(tenant), generation)
+  defp bump_generation(store, cell, generation) do
+    {_result, store} = Store.put(store, generation_key(cell), generation)
     store
   end
 
-  defp generation_key(tenant), do: "cells/#{tenant}/generation"
+  defp generation_key(cell), do: "cells/#{cell}/generation"
 
-  # One namespace per tenant, shared by every owner past and present. Read only
-  # when adopting a tenant: a writer otherwise uses its own counter, and a stale
-  # counter is what makes the conditional write refuse.
-  defp highest_txid(world, tenant) do
+  # One namespace per cell, shared by every owner past and present. Read only when
+  # adopting: a writer otherwise uses its own counter, and a stale counter is what
+  # makes the conditional write refuse.
+  defp highest_txid(world, cell) do
     world.store
-    |> Store.list("cells/#{tenant}/snapshots/")
-    |> length()
+    |> Store.list("cells/#{cell}/snapshots/")
+    |> Enum.map(&(&1 |> String.split("/") |> List.last() |> String.to_integer()))
+    |> Enum.max(fn -> 0 end)
   end
 end

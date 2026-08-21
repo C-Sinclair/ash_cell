@@ -86,38 +86,67 @@ defmodule AshCell.DSTStage0Test do
       assert :ok = Invariants.check_all(w)
     end
 
-    test "a fenced writer cannot acknowledge" do
-      # :b claims while :a still believes it owns the tenant. :a's durability
-      # write must be refused, and :a must not have acked.
-      #
-      # This is the test that exposed generation-keyed durability as not
-      # fencing at all: :a's write to its own generation succeeded happily
-      # until the txid namespace was made shared.
+    test "a successor picks up everything its predecessor drained" do
+      # The point of shipping before releasing, stated as data rather than ordering.
       w =
         world()
         |> Protocol.claim(:a, "acme")
-        |> then(fn w ->
-          {_, store} = Store.delete(w.store, "cells/acme/lease.json")
-          %{w | store: store}
-        end)
+        |> Protocol.write(:a, "acme", "from-a")
+        |> Protocol.drain(:a, "acme")
         |> Protocol.claim(:b, "acme")
-        |> Protocol.write(:b, "acme", "from-b")
-        |> Protocol.write(:a, "acme", "from-a-fenced")
 
       assert :ok = Invariants.check_all(w)
-      acked = Map.get(w.acked, "acme", [])
-      refute Enum.any?(acked, fn {_gen, value} -> value == "from-a-fenced" end)
+      assert MapSet.member?(World.node(w, :b).values["acme"], "from-a")
     end
 
-    test "a crash mid-flight loses nothing that was acknowledged" do
+    test "a fenced writer's shipment is refused, and it stops serving" do
+      # :b takes the cell while :a still believes it holds it. :a acknowledged a
+      # write locally -- there is no way for it to know at write time -- so what
+      # must happen is that its shipment collides and it serves nothing after.
+      #
+      # This is the test that exposed generation-keyed durability as not fencing at
+      # all: :a's write to its own generation succeeded happily until the txid
+      # namespace was made shared.
       w =
         world()
         |> Protocol.claim(:a, "acme")
-        |> Protocol.write(:a, "acme", "durable")
+        |> Protocol.expire_lease("acme")
+        |> Protocol.claim(:b, "acme")
+        |> Protocol.write(:b, "acme", "from-b")
+        |> Protocol.ship(:b, "acme")
+        |> Protocol.write(:a, "acme", "from-a-fenced")
+        |> Protocol.ship(:a, "acme")
+
+      assert Map.get(World.node(w, :a).fenced, "acme"), ":a should have discovered the fence"
+
+      # And it must not still be answering callers for a cell it knows is not its.
+      w = Protocol.write(w, :a, "acme", "from-a-after-fence")
+      acked = World.acked_values(w, "acme")
+
+      refute "from-a-after-fence" in acked
+      assert "from-b" in acked
+    end
+
+    test "a crash loses only what had not been shipped" do
+      # Bounded, not zero, and the test says which is which rather than asserting
+      # a guarantee the design does not make.
+      w =
+        world()
+        |> Protocol.claim(:a, "acme")
+        |> Protocol.write(:a, "acme", "shipped")
+        |> Protocol.ship(:a, "acme")
+        |> Protocol.write(:a, "acme", "not-shipped")
         |> Protocol.crash(:a)
+        # A crash does not release the lease, so the successor waits out the TTL.
+        # That delay is the cost of dying rather than draining.
+        |> Protocol.expire_lease("acme")
         |> Protocol.claim(:b, "acme")
 
       assert :ok = Invariants.check_all(w)
+
+      recovered = World.node(w, :b).values["acme"]
+      assert MapSet.member?(recovered, "shipped")
+      refute MapSet.member?(recovered, "not-shipped")
     end
 
     test "store faults do not produce a violation, only a failed operation" do
@@ -134,30 +163,85 @@ defmodule AshCell.DSTStage0Test do
     # This is the check that decides whether any of the above is worth running.
     # Each mutant is a bug we have already met, or one we would most fear.
 
-    test "releasing the lease before snapshotting is caught, but only per-step" do
+    test "releasing the lease before shipping is caught, but only per-step" do
       steps = [
         &Protocol.claim(&1, :a, "acme"),
-        fn w -> %{w | nodes: bump_local(w, :a, "acme")} end,
+        &Protocol.write(&1, :a, "acme", "stranded"),
         &Protocol.release_step(&1, :a, "acme"),
-        &Protocol.snapshot_step(&1, :a, "acme")
+        &Protocol.ship_step(&1, :a, "acme")
       ]
 
-      assert {{:violation, :snapshot_precedes_release, _}, _w} = Invariants.run(world(), steps)
+      assert {{:violation, :ship_precedes_release, _}, _w} = Invariants.run(world(), steps)
 
       # And the finding that justifies per-step checking: the same run looks
       # perfectly healthy if you only inspect the final state, because the
-      # snapshot has landed by then. The bug is the window, not the outcome.
+      # shipment has landed by then. The bug is the window, not the outcome.
       final = Enum.reduce(steps, world(), fn step, w -> step.(w) end)
       assert :ok = Invariants.check_all(final)
     end
 
-    test "acknowledging before the write is durable is caught" do
+    test "a stale successor cannot ship backwards while the counter stays local" do
+      # Worth stating as a *positive* result, because it is the reason the local
+      # counter is not an optimisation. A displaced node holding an older database
+      # computes the txid its successor already took, so its shipment is refused
+      # before it can publish anything. There is no mutant here to catch: the
+      # damage is structurally unreachable.
+      steps = [
+        &Protocol.claim(&1, :a, "acme"),
+        &Protocol.write(&1, :a, "acme", "from-a"),
+        &Protocol.ship_step(&1, :a, "acme"),
+        fn w -> %{w | nodes: adopt_stale(w, :b, "acme")} end,
+        &Protocol.ship_step(&1, :b, "acme")
+      ]
+
+      assert {:ok, w} = Invariants.run(world(), steps)
+      assert Map.get(World.node(w, :b).fenced, "acme"), ":b should have been refused"
+      assert MapSet.member?(Protocol.recoverable(w, "acme"), "from-a")
+    end
+
+    test "re-reading the high-water mark before shipping loses shipped data" do
+      # And this is why. Consulting the store for the next txid hands a displaced
+      # node a number nobody has taken, so its conditional write succeeds -- and
+      # because snapshots are whole files it publishes an older database over a
+      # newer one. The refusal that protected the previous test never happens.
+      steps = [
+        &Protocol.claim(&1, :a, "acme"),
+        &Protocol.write(&1, :a, "acme", "from-a"),
+        &Protocol.ship_step(&1, :a, "acme"),
+        fn w -> %{w | nodes: adopt_stale(w, :b, "acme")} end,
+        &Protocol.ship(&1, :b, "acme", :reread_high_water)
+      ]
+
+      assert {{:violation, :no_shipped_write_lost, {"acme", ["from-a"]}}, _w} =
+               Invariants.run(world(), steps)
+    end
+
+    test "carrying on after a refused shipment is caught" do
+      # The gap this suite was restated to find. A node that has learned it does
+      # not own the cell keeps acknowledging writes it can never ship, on a cell
+      # somebody else owns.
       w =
         world()
         |> Protocol.claim(:a, "acme")
-        |> Protocol.write(:a, "acme", "never-shipped", :ack_before_durable)
+        |> Protocol.expire_lease("acme")
+        |> Protocol.claim(:b, "acme")
+        |> Protocol.write(:b, "acme", "from-b")
+        |> Protocol.ship(:b, "acme")
+        |> Protocol.ship(:a, "acme")
+        |> Protocol.write(:a, "acme", "after-fence", :keeps_serving_when_fenced)
 
-      assert {:violation, :no_acknowledged_write_lost, _} = Invariants.check_all(w)
+      assert {:violation, :fenced_node_stops_acknowledging, _} = Invariants.check_all(w)
+    end
+
+    test "a drain that releases without shipping loses acknowledged writes" do
+      w =
+        world()
+        |> Protocol.claim(:a, "acme")
+        |> Protocol.write(:a, "acme", "acked-then-dropped")
+        |> Protocol.drain(:a, "acme", :release_before_ship)
+        |> then(fn w -> %{w | store: elem(Store.delete(w.store, snapshot_of("acme")), 1)} end)
+
+      assert {:violation, :drain_loses_nothing, _} = Invariants.check_all(w)
     end
 
     test "treating a refused claim as success is caught" do
@@ -174,23 +258,44 @@ defmodule AshCell.DSTStage0Test do
       # by anything specific to it.
       violations =
         for {variant, build} <- [
-              {:release_before_snapshot,
+              {:release_before_ship,
                fn ->
                  {violation, _w} =
                    Invariants.run(world(), [
                      &Protocol.claim(&1, :a, "acme"),
-                     fn w -> %{w | nodes: bump_local(w, :a, "acme")} end,
+                     &Protocol.write(&1, :a, "acme", "stranded"),
                      &Protocol.release_step(&1, :a, "acme"),
-                     &Protocol.snapshot_step(&1, :a, "acme")
+                     &Protocol.ship_step(&1, :a, "acme")
                    ])
 
                  violation
                end},
-              {:ack_before_durable,
+              {:reread_high_water,
+               fn ->
+                 {violation, _w} =
+                   Invariants.run(world(), [
+                     &Protocol.claim(&1, :a, "acme"),
+                     &Protocol.write(&1, :a, "acme", "from-a"),
+                     &Protocol.ship_step(&1, :a, "acme"),
+                     fn w -> %{w | nodes: adopt_stale(w, :b, "acme")} end,
+                     &Protocol.ship(&1, :b, "acme", :reread_high_water)
+                   ])
+
+                 violation
+               end},
+              {:keeps_serving_when_fenced,
                fn ->
                  world()
                  |> Protocol.claim(:a, "acme")
-                 |> Protocol.write(:a, "acme", "x", :ack_before_durable)
+                 |> then(fn w ->
+                   {_, store} = Store.delete(w.store, "cells/acme/lease.json")
+                   %{w | store: store}
+                 end)
+                 |> Protocol.claim(:b, "acme")
+                 |> Protocol.write(:b, "acme", "from-b")
+                 |> Protocol.ship(:b, "acme")
+                 |> Protocol.ship(:a, "acme")
+                 |> Protocol.write(:a, "acme", "x", :keeps_serving_when_fenced)
                end},
               {:ignore_lease_refusal,
                fn ->
@@ -213,15 +318,21 @@ defmodule AshCell.DSTStage0Test do
     end
   end
 
-  # Simulates local writes that have not been snapshotted, which is the state a
-  # drain has to protect.
-  defp bump_local(world, id, tenant) do
+  defp snapshot_of(cell), do: Invariants.snapshot_key(cell, 1)
+
+  # A node that adopted the cell before its predecessor's newest shipment, so it
+  # holds an older database than the store does. The state a lease takeover races
+  # into, and what makes a backwards shipment possible.
+  defp adopt_stale(world, id, cell) do
     node = World.node(world, id)
-    generation = Map.get(node.local_generation, tenant, 0) + 1
 
     Map.put(world.nodes, id, %{
       node
-      | local_generation: Map.put(node.local_generation, tenant, generation)
+      | local_generation: Map.put(node.local_generation, cell, 99),
+        held: Map.put(node.held, cell, 99),
+        won: [{cell, 99} | node.won],
+        shipped_txid: Map.put(node.shipped_txid, cell, 0),
+        values: Map.put(node.values, cell, MapSet.new())
     })
   end
 end
