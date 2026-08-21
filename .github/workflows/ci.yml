@@ -335,3 +335,142 @@ jobs:
       - name: Test
         working-directory: ash_cell/demos/rollout
         run: mix test
+
+  demo-shroud:
+    name: Demo — shroud
+    runs-on: ubuntu-latest
+
+    # Runs the full suite, plus three checks nothing else in this repo covers.
+    #
+    # Shroud is the only demo where a cell holds data the *server* cannot read, and
+    # that shape leans on parts of the library the other demos never touch: a cell
+    # bound from a JSON controller with no LiveView socket, cross-cell fan-out where
+    # a page opens one file per author, and a global Postgres resource on its own repo
+    # module sitting alongside all of it. A library change that breaks any of those is
+    # invisible to `console` and `collab_editor`.
+    #
+    # It is also the only place these three are checked at all:
+    #
+    #   * `zero_knowledge_test` asserts the plaintext is absent from the cell file
+    #     after a checkpoint — which is only true with SQLCipher actually linked.
+    #   * `test/js/run.sh` round-trips the browser's WebCrypto against Elixir's
+    #     `:crypto`. Both halves can be individually correct and still disagree on
+    #     SPKI framing or GCM tag placement, and the only symptom is a decryption
+    #     failure with nothing logged. It needs node, hence the toolchain below.
+    #   * `probes/ciphertext/probe.sh` proves a SQLCipher WAL frame carries no
+    #     plaintext, which is what the crypto-shredding claim rests on.
+    env:
+      MIX_ENV: test
+      EXQLITE_USE_SYSTEM: "1"
+      EXQLITE_SYSTEM_CFLAGS: "-I/usr/include/sqlcipher"
+      EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
+
+    # The first job here to need Postgres: Shroud splits its data in two, with
+    # server-visible index rows in Postgres and per-user encrypted content in cells.
+    # Credentials match config/test.exs.
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ash_cell
+
+      - uses: actions/checkout@v4
+        with:
+          repository: C-Sinclair/ash_sqlite
+          ref: main
+          path: ash_sqlite
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: ash_cell/.tool-versions
+          version-type: strict
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      # Both packages, not just the dev headers the other demos need: the ciphertext
+      # probe shells out to the `sqlcipher` CLI, which ships separately.
+      - name: Install SQLCipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev sqlcipher
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ash_cell/demos/shroud/deps
+            ash_cell/demos/shroud/_build
+          key: ${{ runner.os }}-demo-shroud-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('ash_cell/demos/shroud/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-demo-shroud-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Fetch dependencies
+        working-directory: ash_cell/demos/shroud
+        run: mix deps.get
+
+      - name: Compile exqlite against SQLCipher
+        working-directory: ash_cell/demos/shroud
+        run: mix deps.compile exqlite --force
+
+      - name: Check SQLCipher is linked
+        working-directory: ash_cell/demos/shroud
+        run: mix cipher.check
+
+      - name: Check formatting
+        working-directory: ash_cell/demos/shroud
+        run: mix format --check-formatted
+
+      - name: Compile
+        working-directory: ash_cell/demos/shroud
+        run: mix compile --warnings-as-errors
+
+      - name: Test
+        working-directory: ash_cell/demos/shroud
+        run: mix test
+
+      # Guards the config bug this job would otherwise hide: the test cell directory
+      # is set in config/test.exs, and it was once silently overridden by a later line
+      # in config.exs, pointing the suite at the dev fleet's cells.
+      - name: Confirm tests wrote cells somewhere disposable
+        working-directory: ash_cell/demos/shroud
+        run: |
+          test -d tmp/test_cells || { echo "no tmp/test_cells — is :cell_dir being overridden?"; exit 1; }
+          test ! -d priv/cells || { echo "tests wrote into priv/cells"; exit 1; }
+
+      - name: SQLCipher WAL carries no plaintext
+        working-directory: ash_cell/demos/shroud
+        run: ./probes/ciphertext/probe.sh
+
+      - name: Browser and server crypto agree
+        working-directory: ash_cell/demos/shroud
+        run: ./test/js/run.sh
+
+      # A smoke test rather than a benchmark. The published numbers come from a real
+      # machine (docs/probes.md); a shared runner cannot produce comparable ones. What
+      # this catches is the pull-model read path breaking outright.
+      - name: Cell fan-out still works
+        working-directory: ash_cell/demos/shroud
+        run: mix run probes/checkout/run.exs 10
+
+      - name: Build assets
+        working-directory: ash_cell/demos/shroud
+        run: |
+          mix assets.setup
+          mix assets.build
