@@ -84,6 +84,15 @@ defmodule AshCell.Replicator do
         AshCell.Manager.committed(cell_key, txid)
         {:ok, result}
 
+      # Refused means another node holds this cell and has already shipped past us.
+      # The mark is deliberately not advanced -- the next attempt must collide on
+      # the same txid rather than step over the successor that fenced us -- and the
+      # cell stops being served, because from here on every read is stale and every
+      # write is unshippable.
+      {:error, :precondition_failed} ->
+        AshCell.Manager.fence(cell_key)
+        {:error, :precondition_failed}
+
       {:error, reason} ->
         AshCell.Manager.abandoned(cell_key)
         {:error, reason}

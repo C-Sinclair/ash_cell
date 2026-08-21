@@ -44,16 +44,33 @@ defmodule AshCell.Manager do
   cell keeps serving while it drains, so in-flight work can finish; only *new*
   activations are refused.
   """
-  def ensure_started(cell_key) do
+  def ensure_started(cell_key), do: ensure_started(cell_key, 2)
+
+  defp ensure_started(cell_key, attempts_left) do
     case AshCell.Registry.lookup(cell_key) do
       {:ok, pid} ->
-        touch(cell_key)
-        {:ok, pid}
+        # A registry hit is not proof of life. The entry outlives the process by
+        # however long the registry takes to handle its DOWN, and a cell can also
+        # be evicted or drained between one caller's lookup and its next call. Every
+        # caller of this function then gets a `no process` exit from a GenServer it
+        # never knew existed, nowhere near the code that closed the cell.
+        if Process.alive?(pid) do
+          touch(cell_key)
+          {:ok, pid}
+        else
+          retry_start(cell_key, attempts_left)
+        end
 
       :error ->
         GenServer.call(__MODULE__, {:start, cell_key}, 30_000)
     end
   end
+
+  # Still a check-then-use, so it narrows the window rather than closing it --
+  # nothing can promise a pid stays alive after being handed over. What it does
+  # remove is the common case, where the process is already dead when we look.
+  defp retry_start(_cell_key, 0), do: {:error, :cell_died}
+  defp retry_start(cell_key, attempts_left), do: ensure_started(cell_key, attempts_left - 1)
 
   @doc """
   Stops this node taking on new cells.
@@ -168,6 +185,36 @@ defmodule AshCell.Manager do
 
   @doc "Clears a cell's quarantine so the next request retries activation."
   def release(cell_key), do: GenServer.call(__MODULE__, {:release, cell_key})
+
+  @doc """
+  Records that this node has been fenced out of `cell_key`, and stops serving it.
+
+  Called when a shipment is refused, which is the only signal this node gets that
+  somebody else owns the cell now. Until that moment being displaced is safe — the
+  conditional write is what makes it safe. Afterwards it is not: every further
+  write is one that cannot be shipped, and every read answers from a database whose
+  real owner has moved on.
+
+  So the cell is quarantined rather than merely closed. Closing alone would let the
+  next request reactivate it from the same stale file, which is the failure this is
+  trying to stop. Quarantine refuses activation until somebody clears it, which
+  makes recovery deliberate: re-claim the lease, restore, then `release/1`.
+
+  Fail-closed on purpose. Refusing to serve is recoverable and visible; serving
+  data this node no longer owns is neither.
+
+  The cell is closed as well as quarantined, and both are needed.
+  `ensure_started/1` answers from the registry before it consults quarantine, so a
+  cell that is already resident would go on serving every request that found it.
+  Closed with `force: true`, because waiting for quiescence would mean waiting on
+  work that must not be allowed to finish: an uncommitted transaction on a closed
+  connection cannot commit, which is the outcome we want for a cell we do not own.
+  """
+  def fence(cell_key) do
+    :ok = GenServer.call(__MODULE__, {:fence, cell_key})
+    close(cell_key, force: true)
+    :ok
+  end
 
   @doc """
   Activates every cell in `cell_keys`, migrating each.
@@ -342,6 +389,19 @@ defmodule AshCell.Manager do
 
   def handle_call({:release, cell_key}, _from, state),
     do: {:reply, :ok, unquarantine(state, cell_key)}
+
+  def handle_call({:fence, cell_key}, _from, state) do
+    # The lease goes too. Keeping it would leave this node renewing ownership of a
+    # cell it has been told it does not have, and would let a later drain try to
+    # ship again -- collide again -- for as long as the process lived.
+    {:reply, :ok,
+     %{
+       state
+       | leases: Map.delete(state.leases, cell_key),
+         shipping: MapSet.delete(state.shipping, cell_key),
+         quarantined: Map.put(state.quarantined, cell_key, :fenced)
+     }}
+  end
 
   @impl true
   def handle_cast({:touch, cell_key}, state), do: {:noreply, mark(state, cell_key)}

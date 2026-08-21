@@ -258,4 +258,105 @@ defmodule AshCell.FencingTest do
       assert {:error, :no_lease} = AshCell.Manager.claim_txid(unique_cell("unheld"))
     end
   end
+
+  describe "a node that discovers it has been fenced" do
+    setup %{store: store} do
+      dir = Path.join(System.tmp_dir!(), "ash_cell_fenced_#{System.unique_integer([:positive])}")
+
+      start_supervised!(
+        {AshCell,
+         repo: AshCell.TestRepo,
+         dir: dir,
+         migrator: AshCell.TestMigrations,
+         store: store,
+         owner: "node-a",
+         snapshot: false}
+      )
+
+      on_exit(fn -> File.rm_rf!(dir) end)
+      :ok
+    end
+
+    test "stops serving the cell rather than answering from a stale copy",
+         %{store: store} do
+      # The invariant the simulation states as `fenced_node_stops_acknowledging`.
+      # Being displaced without knowing is safe -- the conditional write is what
+      # makes it safe. Carrying on *after* the refusal is not: every read is stale
+      # and every write can never be shipped.
+      cell = unique_cell("fenced_stops")
+
+      {:ok, lease} = Lease.claim(store, cell, "node-a", ttl_ms: 60_000)
+      :ok = AshCell.Manager.put_lease(cell, lease)
+
+      AshCell.with_tenant(cell, fn ->
+        AshCell.Test.TenantPatient.create!("Before", tenant: cell)
+      end)
+
+      # A successor takes the txid this node was going to use.
+      {:ok, _} = ship(store, cell, lease.txid + 1)
+
+      assert {:error, :precondition_failed} = Replicator.ship(store, cell)
+
+      # Refused, not merely logged: the cell is gone and will not come back on its
+      # own, because reactivating would open the same stale file.
+      assert {:error, {:quarantined, :fenced}} = AshCell.bind_cell(cell)
+      refute cell in AshCell.resident_cells()
+    end
+
+    test "gives up the lease, so it cannot renew ownership it does not have",
+         %{store: store} do
+      cell = unique_cell("fenced_lease")
+
+      {:ok, lease} = Lease.claim(store, cell, "node-a", ttl_ms: 60_000)
+      :ok = AshCell.Manager.put_lease(cell, lease)
+      AshCell.with_tenant(cell, fn -> :ok end)
+
+      {:ok, _} = ship(store, cell, lease.txid + 1)
+      assert {:error, :precondition_failed} = Replicator.ship(store, cell)
+
+      assert AshCell.Manager.lease(cell) == nil
+      assert {:error, :no_lease} = AshCell.Manager.claim_txid(cell)
+    end
+
+    test "can be brought back deliberately, but only deliberately", %{store: store} do
+      # Recovery is re-adoption, not a retry. Clearing the quarantine is an
+      # explicit act so that nothing reactivates a stale cell by accident.
+      cell = unique_cell("fenced_recovery")
+
+      {:ok, lease} = Lease.claim(store, cell, "node-a", ttl_ms: 60_000)
+      :ok = AshCell.Manager.put_lease(cell, lease)
+      AshCell.with_tenant(cell, fn -> :ok end)
+
+      {:ok, _} = ship(store, cell, lease.txid + 1)
+      assert {:error, :precondition_failed} = Replicator.ship(store, cell)
+      assert {:error, {:quarantined, :fenced}} = AshCell.bind_cell(cell)
+
+      # A real recovery restores from the successor's snapshot first; the snapshot
+      # here is a synthetic key, so only the deliberate half is exercised.
+      # Restoring real bytes is covered in object_store_test.exs.
+      :ok = AshCell.Manager.release(cell)
+
+      assert {:ok, _} = AshCell.bind_cell(cell)
+      AshCell.unbind()
+    end
+
+    test "quarantines only the cell it lost, not the fleet", %{store: store} do
+      cell = unique_cell("fenced_one")
+      healthy = unique_cell("fenced_other")
+
+      for c <- [cell, healthy] do
+        {:ok, lease} = Lease.claim(store, c, "node-a", ttl_ms: 60_000)
+        :ok = AshCell.Manager.put_lease(c, lease)
+        AshCell.with_tenant(c, fn -> :ok end)
+      end
+
+      txid = AshCell.Manager.lease(cell).txid
+      {:ok, _} = ship(store, cell, txid + 1)
+      assert {:error, :precondition_failed} = Replicator.ship(store, cell)
+
+      assert {:error, {:quarantined, :fenced}} = AshCell.bind_cell(cell)
+      assert {:ok, _} = AshCell.bind_cell(healthy)
+      AshCell.unbind()
+    end
+  end
 end
