@@ -14,7 +14,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         id: beam
@@ -23,7 +23,7 @@ jobs:
           version-type: strict
 
       - name: Cache deps and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             deps
@@ -63,7 +63,7 @@ jobs:
     # be navigated. Local links only: link_verifier skips http(s) by design, so this proves paths
     # resolve, not that the web is up.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install link_verifier
         env:
@@ -91,7 +91,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: erlef/setup-beam@v1
         with:
@@ -144,11 +144,11 @@ jobs:
       # fork by relative path (`../..` and `../../../ash_sqlite`) exactly as a local
       # workspace does. Testing it against published hex packages instead would stop
       # testing the change in front of us.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: ash_cell
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: C-Sinclair/ash_sqlite
           ref: main
@@ -160,7 +160,7 @@ jobs:
           version-file: ash_cell/.tool-versions
           version-type: strict
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -170,7 +170,7 @@ jobs:
           sudo apt-get install -y libsqlcipher-dev
 
       - name: Cache deps and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ash_cell/demos/collab_editor/deps
@@ -263,11 +263,11 @@ jobs:
       MIX_ENV: test
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: ash_cell
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: C-Sinclair/ash_sqlite
           ref: main
@@ -280,7 +280,7 @@ jobs:
           version-type: strict
 
       - name: Cache deps and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ash_cell/demos/console/deps
@@ -317,11 +317,11 @@ jobs:
       EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: ash_cell
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: C-Sinclair/ash_sqlite
           ref: main
@@ -339,7 +339,7 @@ jobs:
           sudo apt-get install -y libsqlcipher-dev
 
       - name: Cache deps and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ash_cell/demos/rollout/deps
@@ -384,11 +384,11 @@ jobs:
       EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: ash_cell
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: C-Sinclair/ash_sqlite
           ref: main
@@ -420,7 +420,7 @@ jobs:
         run: scripts/minio.sh
 
       - name: Cache deps and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ash_cell/demos/vcs/deps
@@ -521,11 +521,11 @@ jobs:
           --health-retries 5
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           path: ash_cell
 
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           repository: C-Sinclair/ash_sqlite
           ref: main
@@ -537,7 +537,7 @@ jobs:
           version-file: ash_cell/.tool-versions
           version-type: strict
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
 
@@ -549,7 +549,7 @@ jobs:
           sudo apt-get install -y libsqlcipher-dev sqlcipher
 
       - name: Cache deps and build
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: |
             ash_cell/demos/shroud/deps
