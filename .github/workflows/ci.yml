@@ -268,3 +268,70 @@ jobs:
       - name: Compile
         working-directory: ash_cell/demos/console
         run: mix compile --warnings-as-errors
+
+  demo-rollout:
+    name: Demo — rollout
+    runs-on: ubuntu-latest
+
+    # Runs its suite rather than only compiling, because the demo is where the read
+    # cache's invalidation is checked against a real resolve path. `read_cache_test`
+    # pins the rules in isolation; only this suite drives the interleaving that
+    # matters — a manifest built before a promotion and published after it — through
+    # the whole of Ash.
+    env:
+      MIX_ENV: test
+      EXQLITE_USE_SYSTEM: "1"
+      EXQLITE_SYSTEM_CFLAGS: "-I/usr/include/sqlcipher"
+      EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ash_cell
+
+      - uses: actions/checkout@v4
+        with:
+          repository: C-Sinclair/ash_sqlite
+          ref: main
+          path: ash_sqlite
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: ash_cell/.tool-versions
+          version-type: strict
+
+      - name: Install SQLCipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ash_cell/demos/rollout/deps
+            ash_cell/demos/rollout/_build
+          key: ${{ runner.os }}-demo-rollout-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('ash_cell/demos/rollout/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-demo-rollout-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Fetch dependencies
+        working-directory: ash_cell/demos/rollout
+        run: mix deps.get
+
+      - name: Compile exqlite against SQLCipher
+        working-directory: ash_cell/demos/rollout
+        run: mix deps.compile exqlite --force
+
+      - name: Check formatting
+        working-directory: ash_cell/demos/rollout
+        run: mix format --check-formatted
+
+      - name: Compile
+        working-directory: ash_cell/demos/rollout
+        run: mix compile --warnings-as-errors
+
+      - name: Test
+        working-directory: ash_cell/demos/rollout
+        run: mix test
