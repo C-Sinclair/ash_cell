@@ -70,17 +70,16 @@ defmodule Demo.Evidence do
     File.read(AshCell.path_for(clinic_id))
   end
 
-  @doc "Ships the clinic to the object store at the next free generation."
+  @doc """
+  Ships the clinic to the object store.
+
+  Goes through `Replicator.ship/2` rather than reserving a txid and snapshotting
+  separately: the txid bookkeeping *is* the fence, and doing it here as well would
+  be a second place to get it wrong. A fleet with no lease, or a ship already in
+  flight, is an ordinary answer rather than an error.
+  """
   def replicate(clinic_id) do
-    store = store()
-
-    generation =
-      case Replicator.latest_generation(store, clinic_id) do
-        {:ok, latest} -> latest + 1
-        {:error, :not_found} -> 1
-      end
-
-    Replicator.snapshot(store, clinic_id, generation)
+    Replicator.ship(store(), clinic_id)
   end
 
   @doc """
@@ -92,10 +91,10 @@ defmodule Demo.Evidence do
   def destroy_and_restore(clinic_id) do
     store = store()
 
-    with {:ok, generation} <- Replicator.latest_generation(store, clinic_id),
+    with {:ok, txid} <- Replicator.newest_snapshot(store, clinic_id),
          {:ok, _} <- Demo.Evidence.delete_clinic(clinic_id),
          false <- File.exists?(AshCell.path_for(clinic_id)),
-         {:ok, restored} <- Replicator.restore(store, clinic_id, generation) do
+         {:ok, restored} <- Replicator.restore(store, clinic_id, txid) do
       {:ok, Map.put(restored, :counts, Demo.Benchmark.count_rows(clinic_id))}
     end
   end
@@ -112,11 +111,11 @@ defmodule Demo.Evidence do
   def inspect_stored_snapshot(clinic_id) do
     store = store()
 
-    with {:ok, generation} <- Replicator.latest_generation(store, clinic_id),
-         {:ok, bytes, etag} <- ObjectStore.get(store, Replicator.snapshot_key(clinic_id, generation)) do
+    with {:ok, txid} <- Replicator.newest_snapshot(store, clinic_id),
+         {:ok, bytes, etag} <- ObjectStore.get(store, Replicator.snapshot_key(clinic_id, txid)) do
       {:ok,
        %{
-         generation: generation,
+         txid: txid,
          etag: etag,
          size: byte_size(bytes),
          sqlite_header?: String.starts_with?(bytes, "SQLite format 3"),

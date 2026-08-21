@@ -169,10 +169,19 @@ defmodule DemoWeb.ConsoleLive do
 
   def handle_event("replicate", _, socket) do
     case Evidence.replicate(socket.assigns.selected.id) do
+      # Not errors: a fleet with no lease does not replicate, and a ship already in
+      # flight will finish on its own. Only `:precondition_failed` means fenced.
+      {:ok, :no_lease} ->
+        {:noreply, put_flash(socket, :info, "This fleet has no lease, so nothing ships.")}
+
+      {:ok, :in_flight} ->
+        {:noreply,
+         put_flash(socket, :info, "Already shipping; the snapshot in flight will finish.")}
+
       {:ok, result} ->
         {:noreply,
          socket
-         |> put_flash(:info, "Shipped generation #{result.generation} (#{bytes(result.bytes)}) to the bucket")
+         |> put_flash(:info, "Shipped txid #{result.txid} (#{bytes(result.bytes)}) to the bucket")
          |> load_selected()}
 
       {:error, reason} ->
@@ -193,7 +202,7 @@ defmodule DemoWeb.ConsoleLive do
         {:noreply,
          socket
          |> assign(restore: result)
-         |> put_flash(:info, "Destroyed locally, restored generation #{result.generation} from the bucket")
+         |> put_flash(:info, "Destroyed locally, restored txid #{result.txid} from the bucket")
          |> load_selected()}
 
       {:error, reason} ->
@@ -206,7 +215,10 @@ defmodule DemoWeb.ConsoleLive do
 
     {:noreply,
      socket
-     |> put_flash(:error, "Key destroyed. This clinic's bytes remain on disk and are now permanently unreadable.")
+     |> put_flash(
+       :error,
+       "Key destroyed. This clinic's bytes remain on disk and are now permanently unreadable."
+     )
      |> load_selected()}
   end
 
@@ -320,7 +332,10 @@ defmodule DemoWeb.ConsoleLive do
           {clinic.name}
           <span :if={clinic.id in @resident} class="ml-2 text-emerald-300">●</span>
         </button>
-        <button phx-click="reseed" class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700">
+        <button
+          phx-click="reseed"
+          class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700"
+        >
           Reseed fleet
         </button>
       </div>
@@ -345,7 +360,9 @@ defmodule DemoWeb.ConsoleLive do
               {if @evidence[:sqlite_header?], do: "yes — NOT encrypted", else: "no — encrypted"}
             </dd>
             <dt class="text-slate-400">Plaintext names on disk</dt>
-            <dd class={if (@evidence[:plaintext_hits] || 0) > 0, do: "text-red-400", else: "text-emerald-400"}>
+            <dd class={
+              if (@evidence[:plaintext_hits] || 0) > 0, do: "text-red-400", else: "text-emerald-400"
+            }>
               {@evidence[:plaintext_hits] || 0}
             </dd>
           </dl>
@@ -353,19 +370,28 @@ defmodule DemoWeb.ConsoleLive do
           <pre class="bg-black rounded p-3 text-[10px] leading-tight overflow-x-auto text-emerald-300 mb-4">{@hexdump}</pre>
 
           <div class="flex gap-2 flex-wrap">
-            <button phx-click="revoke_key" class="px-3 py-2 rounded text-sm bg-amber-700 hover:bg-amber-600">
+            <button
+              phx-click="revoke_key"
+              class="px-3 py-2 rounded text-sm bg-amber-700 hover:bg-amber-600"
+            >
               Destroy this clinic's key
             </button>
-            <button phx-click="delete_clinic" class="px-3 py-2 rounded text-sm bg-red-800 hover:bg-red-700">
+            <button
+              phx-click="delete_clinic"
+              class="px-3 py-2 rounded text-sm bg-red-800 hover:bg-red-700"
+            >
               Delete clinic (rm)
             </button>
-            <button phx-click="close_cell" class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700">
+            <button
+              phx-click="close_cell"
+              class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700"
+            >
               Hibernate cell
             </button>
           </div>
         </section>
-
-        <!-- 2. FLEET -->
+        
+    <!-- 2. FLEET -->
         <section class="bg-slate-900 rounded-lg p-5 border border-slate-800">
           <h2 class="text-lg font-semibold mb-1">2 · The fleet</h2>
           <p class="text-slate-400 text-sm mb-4">
@@ -386,7 +412,10 @@ defmodule DemoWeb.ConsoleLive do
 
           <h3 class="text-sm font-semibold text-slate-300 mt-4 mb-2">Rows in this cell</h3>
           <div class="grid grid-cols-3 gap-2 text-center">
-            <div :for={{table, count} <- @counts} class="bg-slate-950 rounded p-3 border border-slate-800">
+            <div
+              :for={{table, count} <- @counts}
+              class="bg-slate-950 rounded p-3 border border-slate-800"
+            >
               <div class="text-xl font-semibold">{count}</div>
               <div class="text-xs text-slate-400">{table}</div>
             </div>
@@ -398,8 +427,8 @@ defmodule DemoWeb.ConsoleLive do
             before you know which cell to open.
           </p>
         </section>
-
-        <!-- 3. SPEED -->
+        
+    <!-- 3. SPEED -->
         <section class="bg-slate-900 rounded-lg p-5 border border-slate-800">
           <h2 class="text-lg font-semibold mb-1">3 · Speed, fairly measured</h2>
           <p class="text-slate-400 text-sm mb-4">
@@ -408,10 +437,16 @@ defmodule DemoWeb.ConsoleLive do
           </p>
 
           <div class="flex gap-2 mb-4">
-            <button phx-click="benchmark" class="px-3 py-2 rounded text-sm bg-emerald-700 hover:bg-emerald-600">
+            <button
+              phx-click="benchmark"
+              class="px-3 py-2 rounded text-sm bg-emerald-700 hover:bg-emerald-600"
+            >
               Run deep load on both
             </button>
-            <button phx-click="storm" class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700">
+            <button
+              phx-click="storm"
+              class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700"
+            >
               Write 500 rows
             </button>
           </div>
@@ -438,20 +473,26 @@ defmodule DemoWeb.ConsoleLive do
             <p class="text-xs text-slate-400 mt-2">
               The third column is the one that matters: AshCell going through the whole framework
               lands level with hand-written SQL, because the framework cost is no longer hidden
-              behind a network round trip. Point read: {micros(@bench.cell_point)} vs {micros(@bench.pg_point)}.
+              behind a network round trip. Point read: {micros(@bench.cell_point)} vs {micros(
+                @bench.pg_point
+              )}.
             </p>
           </div>
 
           <div :if={@storm} class="mt-4 text-sm bg-slate-950 rounded p-3 border border-slate-800">
-            <div>{@storm.count} writes in {micros(@storm.micros)} — {@storm.per_second}/sec, {micros(@storm.per_write_micros)} each</div>
+            <div>
+              {@storm.count} writes in {micros(@storm.micros)} — {@storm.per_second}/sec, {micros(
+                @storm.per_write_micros
+              )} each
+            </div>
             <p class="text-xs text-amber-400 mt-2">
               Local fsync only. A durable configuration adds a round trip to the object store
               per commit, so this is not the write latency you would ship.
             </p>
           </div>
         </section>
-
-        <!-- 4. OBJECT STORE -->
+        
+    <!-- 4. OBJECT STORE -->
         <section class="bg-slate-900 rounded-lg p-5 border border-slate-800">
           <h2 class="text-lg font-semibold mb-1">4 · The object store</h2>
           <p class="text-slate-400 text-sm mb-4">
@@ -460,13 +501,22 @@ defmodule DemoWeb.ConsoleLive do
           </p>
 
           <div class="flex gap-2 mb-4 flex-wrap">
-            <button phx-click="replicate" class="px-3 py-2 rounded text-sm bg-sky-800 hover:bg-sky-700">
+            <button
+              phx-click="replicate"
+              class="px-3 py-2 rounded text-sm bg-sky-800 hover:bg-sky-700"
+            >
               Ship to bucket
             </button>
-            <button phx-click="inspect_snapshot" class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700">
+            <button
+              phx-click="inspect_snapshot"
+              class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700"
+            >
               Fetch it back
             </button>
-            <button phx-click="destroy_restore" class="px-3 py-2 rounded text-sm bg-red-900 hover:bg-red-800">
+            <button
+              phx-click="destroy_restore"
+              class="px-3 py-2 rounded text-sm bg-red-900 hover:bg-red-800"
+            >
               Destroy locally &amp; restore
             </button>
           </div>
@@ -479,26 +529,31 @@ defmodule DemoWeb.ConsoleLive do
 
           <div :if={@snapshot} class="bg-slate-950 rounded p-3 border border-slate-800 text-sm">
             <div class="grid grid-cols-2 gap-1 text-xs mb-2">
-              <span class="text-slate-400">Generation</span><span>{@snapshot.generation}</span>
+              <span class="text-slate-400">Txid</span><span>{@snapshot.txid}</span>
               <span class="text-slate-400">ETag</span><span class="font-mono">{@snapshot.etag}</span>
               <span class="text-slate-400">Size</span><span>{bytes(@snapshot.size)}</span>
               <span class="text-slate-400">Plaintext in stored bytes</span>
-              <span class={if @snapshot.plaintext_hits > 0, do: "text-red-400", else: "text-emerald-400"}>
+              <span class={
+                if @snapshot.plaintext_hits > 0, do: "text-red-400", else: "text-emerald-400"
+              }>
                 {@snapshot.plaintext_hits}
               </span>
             </div>
             <pre class="bg-black rounded p-2 text-[10px] leading-tight overflow-x-auto text-sky-300">{@snapshot.head}</pre>
           </div>
 
-          <div :if={@restore} class="mt-3 bg-emerald-950 rounded p-3 border border-emerald-800 text-sm">
-            Restored generation {@restore.generation} ({bytes(@restore.bytes)}) after deleting the local file.
+          <div
+            :if={@restore}
+            class="mt-3 bg-emerald-950 rounded p-3 border border-emerald-800 text-sm"
+          >
+            Restored txid {@restore.txid} ({bytes(@restore.bytes)}) after deleting the local file.
             <div class="text-xs text-slate-300 mt-1">
               Rows back: {inspect(@restore.counts)}
             </div>
           </div>
         </section>
-
-        <!-- 6. RECORDS -->
+        
+    <!-- 6. RECORDS -->
         <section class="bg-slate-900 rounded-lg p-5 border border-slate-800">
           <h2 class="text-lg font-semibold mb-1">6 · Records</h2>
           <p class="text-slate-400 text-sm mb-4">
@@ -509,26 +564,38 @@ defmodule DemoWeb.ConsoleLive do
 
           <form phx-submit="save_patient" class="grid grid-cols-2 gap-2 mb-3">
             <input
-              type="text" name="patient[name]" placeholder="Patient name" required
+              type="text"
+              name="patient[name]"
+              placeholder="Patient name"
+              required
               value={@editing && @editing.name}
               class="col-span-2 bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm"
             />
             <input
-              type="text" name="patient[mrn]" placeholder="MRN"
+              type="text"
+              name="patient[mrn]"
+              placeholder="MRN"
               value={@editing && @editing.mrn}
               class="bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm"
             />
             <input
-              type="number" name="patient[birth_year]" placeholder="Birth year"
+              type="number"
+              name="patient[birth_year]"
+              placeholder="Birth year"
               value={@editing && @editing.birth_year}
               class="bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm"
             />
             <div class="col-span-2 flex gap-2">
-              <button type="submit" class="px-3 py-2 rounded text-sm bg-emerald-800 hover:bg-emerald-700">
+              <button
+                type="submit"
+                class="px-3 py-2 rounded text-sm bg-emerald-800 hover:bg-emerald-700"
+              >
                 {if @editing, do: "Save changes", else: "Add patient"}
               </button>
               <button
-                :if={@editing} type="button" phx-click="cancel_edit"
+                :if={@editing}
+                type="button"
+                phx-click="cancel_edit"
                 class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700"
               >
                 Cancel
@@ -555,10 +622,18 @@ defmodule DemoWeb.ConsoleLive do
                     <td class="px-2 py-1.5 text-slate-400 font-mono text-xs">{p.mrn}</td>
                     <td class="px-2 py-1.5 text-slate-400 text-xs">{p.birth_year}</td>
                     <td class="px-2 py-1.5 text-right whitespace-nowrap">
-                      <button phx-click="edit_patient" phx-value-id={p.id} class="text-sky-400 text-xs mr-2">
+                      <button
+                        phx-click="edit_patient"
+                        phx-value-id={p.id}
+                        class="text-sky-400 text-xs mr-2"
+                      >
                         edit
                       </button>
-                      <button phx-click="delete_patient" phx-value-id={p.id} class="text-red-400 text-xs">
+                      <button
+                        phx-click="delete_patient"
+                        phx-value-id={p.id}
+                        class="text-red-400 text-xs"
+                      >
                         delete
                       </button>
                     </td>
@@ -570,10 +645,15 @@ defmodule DemoWeb.ConsoleLive do
 
           <form phx-submit="search_all" class="mt-4 flex gap-2">
             <input
-              type="text" name="term" value={@search_term} placeholder="Find a name across every clinic"
+              type="text"
+              name="term"
+              value={@search_term}
+              placeholder="Find a name across every clinic"
               class="flex-1 bg-slate-950 border border-slate-700 rounded px-2 py-1.5 text-sm"
             />
-            <button class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700">Search all</button>
+            <button class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700">
+              Search all
+            </button>
           </form>
 
           <div :if={@search} class="mt-3 bg-slate-950 rounded p-3 border border-slate-800">
@@ -589,8 +669,8 @@ defmodule DemoWeb.ConsoleLive do
             </div>
           </div>
         </section>
-
-        <!-- 5. DEPLOY -->
+        
+    <!-- 5. DEPLOY -->
         <section class="bg-slate-900 rounded-lg p-5 border border-slate-800">
           <h2 class="text-lg font-semibold mb-1">5 · The deploy</h2>
           <p class="text-slate-400 text-sm mb-4">
@@ -600,13 +680,22 @@ defmodule DemoWeb.ConsoleLive do
           </p>
 
           <div class="flex gap-2 mb-4 flex-wrap">
-            <button phx-click="hold_cell" class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700">
+            <button
+              phx-click="hold_cell"
+              class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700"
+            >
               Open a tab on this clinic
             </button>
-            <button phx-click="release_cell" class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700">
+            <button
+              phx-click="release_cell"
+              class="px-3 py-2 rounded text-sm bg-slate-800 border border-slate-700"
+            >
               Close it
             </button>
-            <button phx-click="simulate_deploy" class="px-3 py-2 rounded text-sm bg-amber-800 hover:bg-amber-700">
+            <button
+              phx-click="simulate_deploy"
+              class="px-3 py-2 rounded text-sm bg-amber-800 hover:bg-amber-700"
+            >
               Deploy (drain the node)
             </button>
           </div>
