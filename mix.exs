@@ -40,7 +40,8 @@ defmodule AshCell.MixProject do
         "Changelog" => "#{@source_url}/blob/main/CHANGELOG.md",
         "Ash Framework" => "https://ash-hq.org"
       },
-      files: ~w[lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* docs usage-rules.md]
+      files:
+        ~w[lib .formatter.exs mix.exs README* LICENSE* CHANGELOG* CONTRIBUTING* docs usage-rules.md]
     ]
   end
 
@@ -54,7 +55,8 @@ defmodule AshCell.MixProject do
         {"README.md", title: "Home"},
         {"CHANGELOG.md", title: "Changelog"},
         "docs/spec.md",
-        "docs/dst.md"
+        "docs/dst.md",
+        {"CONTRIBUTING.md", title: "Contributing"}
       ],
       groups_for_modules: [
         "Getting started": [AshCell, AshCell.Resource, AshCell.Migrator],
