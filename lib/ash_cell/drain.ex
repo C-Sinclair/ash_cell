@@ -209,9 +209,15 @@ defmodule AshCell.Drain do
   defp snapshot(_cell_key, nil), do: {:ok, :no_store}
 
   defp snapshot(cell_key, store) do
-    case AshCell.Manager.generation(cell_key) do
-      nil -> {:ok, :no_lease}
-      generation -> AshCell.Replicator.snapshot(store, cell_key, generation)
+    case AshCell.Manager.next_txid(cell_key) do
+      nil ->
+        {:ok, :no_lease}
+
+      txid ->
+        with {:ok, result} <- AshCell.Replicator.snapshot(store, cell_key, txid) do
+          AshCell.Manager.commit_txid(cell_key, txid)
+          {:ok, result}
+        end
     end
   end
 

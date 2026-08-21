@@ -106,11 +106,11 @@ defmodule AshCell.DrainHandoffTest do
 
       AshCell.drain(grace_ms: 500)
 
-      # By the time the lease is claimable, the snapshot for that generation
-      # already exists.
-      assert {:ok, %Lease{}} = Lease.claim(store, tenant, "node-b", ttl_ms: 60_000)
-      assert {:ok, generation} = Replicator.latest_generation(store, tenant)
-      assert generation >= lease.generation
+      # By the time the lease is claimable, the snapshot is already in the bucket,
+      # so the successor adopts a mark that is at least as new as what this node
+      # shipped.
+      assert {:ok, %Lease{txid: adopted}} = Lease.claim(store, tenant, "node-b", ttl_ms: 60_000)
+      assert adopted > lease.txid
     end
   end
 
@@ -168,7 +168,7 @@ defmodule AshCell.DrainHandoffTest do
     end
   end
 
-  defp unique_tenant(prefix), do: "#{prefix}_#{System.unique_integer([:positive])}"
+  defp unique_tenant(prefix), do: unique_cell(prefix)
 
   defp write(tenant, name) do
     AshCell.with_tenant(tenant, fn -> TenantPatient.create!(name, tenant: tenant) end)

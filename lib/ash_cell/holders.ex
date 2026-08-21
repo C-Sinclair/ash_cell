@@ -54,7 +54,7 @@ defmodule AshCell.Holders do
   @doc "How many processes hold `cell_key`."
   def count(cell_key), do: length(holders(cell_key))
 
-  @doc "Every cell_key with at least one holder, and how many."
+  @doc "Every cell with at least one holder, and how many."
   def fleet do
     __MODULE__
     |> Registry.select([{{:"$1", :_, :_}, [], [:"$1"]}])

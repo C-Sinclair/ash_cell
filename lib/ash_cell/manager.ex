@@ -81,6 +81,23 @@ defmodule AshCell.Manager do
     end
   end
 
+  @doc """
+  Claims the next txid for `cell_key` from this node's local counter.
+
+  Deliberately local. Reading the high-water mark from the object store here would
+  undo the fence: a node that has lost the cell would read its successor's mark and
+  write safely above it, so its conditional PUT would succeed and it would
+  acknowledge a write that is about to be superseded. The mark is read once, when
+  the lease is taken, and only advances here.
+
+  Returns `nil` if this node holds no lease for the cell, which is not an error —
+  a fleet with no object store never takes one.
+  """
+  def next_txid(cell_key), do: GenServer.call(__MODULE__, {:next_txid, cell_key})
+
+  @doc false
+  def commit_txid(cell_key, txid), do: GenServer.call(__MODULE__, {:commit_txid, cell_key, txid})
+
   @doc false
   def put_lease(cell_key, lease), do: GenServer.call(__MODULE__, {:put_lease, cell_key, lease})
 
@@ -130,7 +147,7 @@ defmodule AshCell.Manager do
   """
   def quarantined, do: GenServer.call(__MODULE__, :quarantined)
 
-  @doc "Clears a cell_key's quarantine so the next request retries activation."
+  @doc "Clears a cell's quarantine so the next request retries activation."
   def release(cell_key), do: GenServer.call(__MODULE__, {:release, cell_key})
 
   @doc """
@@ -265,6 +282,27 @@ defmodule AshCell.Manager do
 
   def handle_call({:put_lease, cell_key, lease}, _from, state) do
     {:reply, :ok, %{state | leases: Map.put(state.leases, cell_key, lease)}}
+  end
+
+  def handle_call({:next_txid, cell_key}, _from, state) do
+    case state.leases[cell_key] do
+      nil -> {:reply, nil, state}
+      lease -> {:reply, (lease.txid || 0) + 1, state}
+    end
+  end
+
+  # Advanced only after the conditional PUT succeeded. A refused write must leave
+  # the counter alone: the next attempt has to collide on the same txid, or the
+  # writer would silently skip past the successor that fenced it.
+  def handle_call({:commit_txid, cell_key, txid}, _from, state) do
+    case state.leases[cell_key] do
+      nil ->
+        {:reply, :ok, state}
+
+      lease ->
+        leases = Map.put(state.leases, cell_key, %{lease | txid: txid})
+        {:reply, :ok, %{state | leases: leases}}
+    end
   end
 
   def handle_call(:quarantined, _from, state), do: {:reply, state.quarantined, state}

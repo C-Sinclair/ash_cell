@@ -124,7 +124,7 @@ defmodule AshCell.Registry do
     end
   end
 
-  @doc "Bind counts for every cell_key with outstanding work."
+  @doc "Bind counts for every cell with outstanding work."
   def active_fleet do
     @binds
     |> :ets.tab2list()

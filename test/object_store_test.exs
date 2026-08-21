@@ -134,11 +134,11 @@ defmodule AshCell.ObjectStoreTest do
       refute File.exists?(AshCell.path_for(tenant))
       assert [] = read(tenant)
 
-      assert {:ok, %{generation: 1}} = Replicator.restore(store, tenant)
+      assert {:ok, %{txid: 1}} = Replicator.restore(store, tenant)
       assert ["Ada Lovelace", "Grace Hopper"] = read(tenant)
     end
 
-    test "restores a specific earlier generation, not just the newest", %{
+    test "restores a specific earlier txid, not just the newest", %{
       store: store,
       tenant: tenant
     } do
@@ -148,7 +148,7 @@ defmodule AshCell.ObjectStoreTest do
       write(tenant, ["Added Later"])
       {:ok, _} = Replicator.snapshot(store, tenant, 2)
 
-      assert {:ok, 2} = Replicator.latest_generation(store, tenant)
+      assert 2 = Replicator.latest_txid(store, tenant)
 
       {:ok, _} = Replicator.restore(store, tenant, 1)
       assert ["Only Ada"] = read(tenant)
@@ -190,10 +190,7 @@ defmodule AshCell.ObjectStoreTest do
   end
 
   # The bucket outlives the VM, but System.unique_integer/1 restarts with it, so
-  # names must carry wall-clock time or a later run collides with an earlier one's
-  # keys and conditional writes fail for the wrong reason.
-  defp unique_tenant(prefix),
-    do: "#{prefix}_#{System.system_time(:nanosecond)}_#{System.unique_integer([:positive])}"
+  defp unique_tenant(prefix), do: unique_cell(prefix)
 
   defp write(tenant, names) do
     AshCell.with_tenant(tenant, fn ->
