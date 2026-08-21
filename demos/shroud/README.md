@@ -18,7 +18,7 @@ That split is not a compromise, it is the mechanism: public posts can be indexed
 ordered globally in Postgres *because* the server can read them, and private posts
 cannot *because* it can't.
 
-- [`docs/prd.md`](docs/prd.md) — the design, the threat model, and the tier split
+- [`docs/design.md`](docs/design.md) — the design, the threat model, and the tier split
 - [`docs/probes.md`](docs/probes.md) — Stage 0 measurements, including the one that
   settled pull vs. push
 
@@ -60,7 +60,7 @@ but the resident-cell cap. Below the cap a checkout is a rounding error; above i
 every read evicts a cell another read is about to want.
 
 So the design rule is not "avoid fan-out" — it is **`max_resident` must exceed the
-working set of a feed page**. That inverted the PRD's open question: push (a global
+working set of a feed page**. That inverted the design doc's open question: push (a global
 table of pre-shared ciphertext) was specified as insurance against fan-out being
 inherently expensive, and the measurement says it is not. Pull stands, push stays
 unbuilt, and what replaces it as a live concern is capacity planning, where the failure

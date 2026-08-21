@@ -1,0 +1,79 @@
+# Architecture decisions
+
+One file per decision. **Read these before proposing a change to the cell runtime, the
+replication path, or the binding path** — most of them record something that was tried and did
+not work, or a claim that turned out false, and re-deriving those costs a day each.
+
+**Edit these in place.** An ADR should say what is true now, so a reader never has to work out
+which of two files is current. Git is the history — `git log -p docs/decisions/ADR-08-*.md` shows
+what a decision used to say, and a SHA in an ADR's **Notes** section points at a specific earlier
+version. Corrections are the point, not an embarrassment: five of these exist because something
+believed true was measured false, and each says so in its own body rather than in a successor
+file.
+
+Start from [`ADR-00-TEMPLATE.md`](ADR-00-TEMPLATE.md). Design docs for planned or built features
+live in [`../design/`](../design), and reference these.
+
+## Binding — how a query reaches the right database
+
+| # | Decision | Status |
+|---|---|---|
+| [01](ADR-01-bind-tenants-per-process.md) | Bind tenants per-process with `put_dynamic_repo/1`, not a query-context pid | corrects an earlier belief |
+| [02](ADR-02-bind-in-the-data-layer.md) | Bind in the data layer via a `tenant_binder` seam, not action hooks | accepted |
+| [03](ADR-03-fork-ash-sqlite-narrowly.md) | Fork `ash_sqlite` narrowly and keep it upstreamable; do not vendor it | accepted |
+| [04](ADR-04-transactions-behind-an-opt-in-flag.md) | Enable transactions behind an opt-in flag, with `BEGIN IMMEDIATE` | accepted |
+| [05](ADR-05-refuse-cross-cell-transactions.md) | Refuse cross-cell transactions rather than build a coordinator | accepted |
+| [06](ADR-06-own-repo-for-shared-tables.md) | Give non-tenanted resources their own repo module | accepted |
+| [07](ADR-07-opaque-cell-keys.md) | Key cells by an opaque cell key, and encode it injectively | accepted |
+
+## Ownership and durability
+
+| # | Decision | Status |
+|---|---|---|
+| [08](ADR-08-fence-by-shared-txid.md) | Fence durability by a shared txid namespace, not by lease generation | corrects an earlier belief |
+| [09](ADR-09-snapshot-before-releasing-the-lease.md) | Snapshot before releasing the lease, and checkpoint before snapshotting | accepted |
+| [10](ADR-10-fail-closed-on-a-refused-shipment.md) | Stop serving a cell once a shipment proves it is not ours | corrects an earlier belief |
+| [11](ADR-11-simulate-the-protocol-only.md) | Simulate the coordination protocol only; SQLite and real processes stay out | accepted |
+| [12](ADR-12-whole-file-snapshots-on-a-schedule.md) | Ship whole-file snapshots on a jittered schedule; defer per-commit durability | accepted |
+| [14](ADR-14-bounded-read-staleness.md) | Bound read staleness on the monotonic clock, and expose it as explicit modes | accepted |
+| [20](ADR-20-choose-a-durability-level.md) | Choose SQLite's durability level (`synchronous`) | **proposed — open** |
+
+## Performance, encryption, integration
+
+| # | Decision | Status |
+|---|---|---|
+| [13](ADR-13-pool-size-one-and-cache.md) | Keep `pool_size` at 1 and cache above SQLite instead | corrects an earlier belief |
+| [15](ADR-15-sqlcipher-from-the-system-build.md) | Get SQLCipher from the system build, and guard it with `mix cipher.check` | accepted |
+| [17](ADR-17-bind-per-liveview-callback.md) | Bind per LiveView callback, never at mount, and track holders explicitly | accepted |
+| [18](ADR-18-tenant-in-job-args.md) | Carry the tenant in job args, and fail closed when it is missing | accepted |
+
+## Claims and scope
+
+| # | Decision | Status |
+|---|---|---|
+| [16](ADR-16-isolation-is-blast-radius.md) | Claim physical isolation as blast-radius reduction, not as compliance | corrects an earlier belief |
+| [19](ADR-19-the-cell-cut-is-a-choice.md) | Treat the cell cut as a choice, with one cell per tenant as the default | accepted |
+
+## The five that correct something
+
+These matter most, because each one records a belief that was held, acted on, and then measured
+false. Do not reintroduce the superseded position:
+
+- **[ADR-01](ADR-01-bind-tenants-per-process.md)** — the query-context override cannot carry a
+  repo *instance*. It selects a module; a pid raises.
+- **[ADR-08](ADR-08-fence-by-shared-txid.md)** — keying durability by lease generation does not
+  fence at all. `AshCell.Lease`'s own moduledoc said otherwise and was wrong.
+- **[ADR-10](ADR-10-fail-closed-on-a-refused-shipment.md)** — a refused shipment used to log and
+  carry on serving. It now quarantines and closes.
+- **[ADR-13](ADR-13-pool-size-one-and-cache.md)** — widening the connection pool was claimed as a
+  cheap win. Measured, it is flat on point reads and 1.9× *worse* on a realistic join.
+- **[ADR-16](ADR-16-isolation-is-blast-radius.md)** — the compliance pitch was overstated. HIPAA
+  does not require physical isolation.
+
+## Still open
+
+[ADR-20](ADR-20-choose-a-durability-level.md) is undecided and the risk is live. Beyond it, and
+not yet worth an ADR each: every deploy migrates every cell; reads are not fenced the way writes
+are; background jobs have no request boundary to route at; thundering herd on node loss;
+`ObjectStore.list/2` has no S3 pagination, so it breaks past 1000 snapshots; snapshot and restore
+are non-atomic whole-file operations; `assert_bound!/0` cannot detect a tenant mismatch.

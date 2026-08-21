@@ -1,6 +1,6 @@
 # Stage 0 probes
 
-Run before any app code, because each one could invalidate part of `prd.md`. Numbers are
+Run before any app code, because each one could invalidate part of `design.md`. Numbers are
 from a run on this machine (M-series, macOS 24.6, SQLCipher 4.x, PostgreSQL 17.10,
 Elixir 1.19.1/OTP 28), not estimates.
 
@@ -84,7 +84,7 @@ So the design rule is not "avoid fan-out". It is:
 > **`max_resident` must exceed the working set of a feed page.** A feed of N profiles
 > needs headroom for N resident cells, plus whatever else the node is serving.
 
-That reframes the pull-vs-push question in `prd.md`. Push was specified as insurance
+That reframes the pull-vs-push question in `design.md`. Push was specified as insurance
 against fan-out being inherently expensive. It is not — 200 cells in 16.6 ms is fine.
 **Pull stands, and `SharedBlob` stays unbuilt.** What replaces it as a real concern is
 capacity planning: a node serving feeds needs a resident cap sized to concurrent feed

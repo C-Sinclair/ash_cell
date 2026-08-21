@@ -78,7 +78,7 @@ CK ──encrypts─> the Tier 1 ciphertext (XChaCha20-Poly1305)
 
 ### Primitives: what WebCrypto forced
 
-The PRD originally specified XChaCha20-Poly1305, X25519 and Argon2id. All three changed
+This document originally specified XChaCha20-Poly1305, X25519 and Argon2id. All three changed
 during implementation, because the counterpart of every operation is native WebCrypto and
 a WASM bundle for a PoC is not worth the weight:
 
@@ -132,7 +132,7 @@ sitting in their cell. This is the whole reason the audience-key graph exists.
 **The server processing Tier 1 with nobody online.** Genuinely impossible. Thumbnails are
 generated in the browser at upload time and encrypted alongside the full image. Anything
 else that wants server-side processing of a field is an argument for moving that field to
-Tier 0, and the PRD should say which tier and why.
+Tier 0, and this document should say which tier and why.
 
 ## Data model
 

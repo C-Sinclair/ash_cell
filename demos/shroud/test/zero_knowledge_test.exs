@@ -1,7 +1,7 @@
 defmodule Shroud.ZeroKnowledgeTest do
   @moduledoc """
   The claims the app is *for*. Each test here corresponds to a line in
-  `docs/prd.md` that would otherwise be an assertion nobody checked.
+  `docs/design.md` that would otherwise be an assertion nobody checked.
   """
   use Shroud.CellCase, async: false
 

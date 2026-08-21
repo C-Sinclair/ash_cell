@@ -1,7 +1,7 @@
 # Probe: what does a pull-model feed cost?
 #
 # The feed reads one row from each of N different users' cells. Every other design
-# question in docs/prd.md is downstream of this number, so it is measured before
+# question in docs/design.md is downstream of this number, so it is measured before
 # any UI exists to hide it.
 #
 #   mix run probes/checkout/run.exs [n_owners]
