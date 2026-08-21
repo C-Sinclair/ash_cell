@@ -66,7 +66,7 @@ defmodule AshCell.ContextTest do
 
       assert nil ==
                AshCell.with_tenant("acme", fn ->
-                 Task.async(fn -> AshCell.bound_tenant() end) |> Task.await()
+                 Task.async(fn -> AshCell.bound_cell() end) |> Task.await()
                end)
     end
 
@@ -78,9 +78,9 @@ defmodule AshCell.ContextTest do
       assert "acme" == AshCell.with_tenant("acme", fn -> AshCell.assert_bound!() end)
     end
 
-    test "bound_tenant survives a cell restart under the same binding call" do
-      assert "acme" = AshCell.with_tenant("acme", fn -> AshCell.bound_tenant() end)
-      assert nil == AshCell.bound_tenant()
+    test "bound_cell survives a cell restart under the same binding call" do
+      assert "acme" = AshCell.with_tenant("acme", fn -> AshCell.bound_cell() end)
+      assert nil == AshCell.bound_cell()
     end
   end
 
@@ -135,7 +135,7 @@ defmodule AshCell.ContextTest do
       assert {["Inner Row"], "outer"} =
                AshCell.with_tenant("outer", fn ->
                  inner = AshCell.with_tenant("inner", fn -> read_bound() end)
-                 {inner, AshCell.bound_tenant()}
+                 {inner, AshCell.bound_cell()}
                end)
     end
 
@@ -146,7 +146,7 @@ defmodule AshCell.ContextTest do
         AshCell.with_tenant("acme", fn -> raise "boom" end)
       )
 
-      assert nil == AshCell.bound_tenant()
+      assert nil == AshCell.bound_cell()
     end
   end
 
@@ -157,7 +157,7 @@ defmodule AshCell.ContextTest do
   defp read(tenant), do: AshCell.with_tenant(tenant, fn -> read_bound() end)
 
   defp read_bound do
-    tenant = AshCell.bound_tenant()
+    tenant = AshCell.bound_cell()
 
     TenantPatient
     |> Ash.Query.set_tenant(tenant)

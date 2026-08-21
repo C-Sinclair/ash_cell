@@ -28,7 +28,7 @@ defmodule AshCell.DrainTest do
     test "a sealed node refuses to take on new cells" do
       assert :ok = AshCell.Manager.seal()
       assert {:error, :draining} = AshCell.Manager.ensure_started("newcomer")
-      refute "newcomer" in AshCell.resident_tenants()
+      refute "newcomer" in AshCell.resident_cells()
     end
 
     test "an already-resident cell keeps serving while sealed" do
@@ -144,13 +144,13 @@ defmodule AshCell.DrainTest do
   describe "draining the fleet" do
     test "closes every resident cell and reports them" do
       for tenant <- ~w(a b c), do: write(tenant, "Row")
-      assert length(AshCell.resident_tenants()) == 3
+      assert length(AshCell.resident_cells()) == 3
 
       assert {:ok, report} = AshCell.drain(grace_ms: 500)
 
       assert Enum.sort(report.drained) == ~w(a b c)
       assert report.failed == %{}
-      assert AshCell.resident_tenants() == []
+      assert AshCell.resident_cells() == []
     end
 
     test "data survives the drain and is readable after reactivation" do
@@ -260,15 +260,15 @@ defmodule AshCell.DrainTest do
       write("stays", "Row")
       write("goes", "Row")
 
-      assert {:ok, _} = AshCell.Drain.drain_tenant("goes", nil, 500)
+      assert {:ok, _} = AshCell.Drain.drain_cell("goes", nil, 500)
 
-      assert "stays" in AshCell.resident_tenants()
-      refute "goes" in AshCell.resident_tenants()
+      assert "stays" in AshCell.resident_cells()
+      refute "goes" in AshCell.resident_cells()
     end
 
     test "reports whether the cell went quiet before it was taken" do
       write("acme", "Row")
-      assert {:ok, %{quiesced?: true}} = AshCell.Drain.drain_tenant("acme", nil, 500)
+      assert {:ok, %{quiesced?: true}} = AshCell.Drain.drain_cell("acme", nil, 500)
     end
   end
 

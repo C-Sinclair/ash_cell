@@ -43,7 +43,7 @@ defmodule AshCell.Ownership do
       that genuinely needs it, never as a global default.
   """
 
-  defstruct [:tenant, :owner, :expires_at_monotonic, :generation, :ttl_ms, :lease]
+  defstruct [:cell_key, :owner, :expires_at_monotonic, :generation, :ttl_ms, :lease]
 
   @doc """
   Records a freshly acquired or renewed lease so reads can be checked against it.
@@ -53,7 +53,7 @@ defmodule AshCell.Ownership do
   """
   def held(%AshCell.Lease{} = lease, ttl_ms) do
     %__MODULE__{
-      tenant: lease.tenant,
+      cell_key: lease.cell_key,
       owner: lease.owner,
       generation: lease.generation,
       ttl_ms: ttl_ms,
@@ -63,7 +63,7 @@ defmodule AshCell.Ownership do
   end
 
   @doc """
-  Decides whether this node may still serve `tenant`.
+  Decides whether this node may still serve `cell_key`.
 
   Returns `:ok`, or `{:error, {:lease_expired, ms_overdue}}` when the holder is
   past its TTL. The overdue figure is included because "how far past" is the first
@@ -86,7 +86,7 @@ defmodule AshCell.Ownership do
   end
 
   def check(%__MODULE__{} = ownership, {:strict, store}) do
-    case AshCell.Lease.holder(store, ownership.tenant) do
+    case AshCell.Lease.holder(store, ownership.cell_key) do
       {:ok, owner} when owner == ownership.owner -> :ok
       {:ok, other} -> {:error, {:not_owner, other}}
       other -> other
@@ -94,7 +94,7 @@ defmodule AshCell.Ownership do
   end
 
   @doc """
-  Runs `fun` only if this node still holds `tenant`.
+  Runs `fun` only if this node still holds `cell_key`.
 
   The read path's counterpart to the conditional write on the write path: it
   cannot make a stale read impossible, only bounded.

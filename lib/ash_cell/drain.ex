@@ -88,26 +88,26 @@ defmodule AshCell.Drain do
 
     AshCell.Manager.seal()
 
-    tenants = AshCell.resident_tenants()
+    cell_keys = AshCell.resident_cells()
 
     results =
-      tenants
-      |> Task.async_stream(&drain_tenant(&1, store, grace_ms),
+      cell_keys
+      |> Task.async_stream(&drain_cell(&1, store, grace_ms),
         max_concurrency: Keyword.get(opts, :concurrency, @default_concurrency),
         timeout: grace_ms + 10_000,
         on_timeout: :kill_task
       )
-      |> Enum.zip(tenants)
+      |> Enum.zip(cell_keys)
       |> Enum.map(fn
-        {{:ok, result}, tenant} -> {tenant, result}
-        {{:exit, reason}, tenant} -> {tenant, {:error, {:drain_timeout, reason}}}
+        {{:ok, result}, cell_key} -> {cell_key, result}
+        {{:exit, reason}, cell_key} -> {cell_key, {:error, {:drain_timeout, reason}}}
       end)
 
     {drained, failed} = Enum.split_with(results, &match?({_, {:ok, _}}, &1))
 
     report = %{
       drained: Enum.map(drained, &elem(&1, 0)),
-      failed: Map.new(failed, fn {tenant, {:error, reason}} -> {tenant, reason} end),
+      failed: Map.new(failed, fn {cell_key, {:error, reason}} -> {cell_key, reason} end),
       duration_ms: System.monotonic_time(:millisecond) - started
     }
 
@@ -121,14 +121,14 @@ defmodule AshCell.Drain do
   Exposed for tests and for targeted operational use — moving a single noisy
   tenant off a node without draining everything else.
   """
-  def drain_tenant(tenant, store \\ nil, grace_ms \\ @default_grace_ms) do
-    warn_holders(tenant, grace_ms)
-    quiesced? = await_quiescence(tenant, grace_ms)
+  def drain_cell(cell_key, store \\ nil, grace_ms \\ @default_grace_ms) do
+    warn_holders(cell_key, grace_ms)
+    quiesced? = await_quiescence(cell_key, grace_ms)
 
-    with :ok <- checkpoint(tenant),
-         {:ok, snapshot} <- snapshot(tenant, store),
-         :ok <- release_lease(tenant, store) do
-      AshCell.Manager.close(tenant)
+    with :ok <- checkpoint(cell_key),
+         {:ok, snapshot} <- snapshot(cell_key, store),
+         :ok <- release_lease(cell_key, store) do
+      AshCell.Manager.close(cell_key)
       {:ok, %{quiesced?: quiesced?, snapshot: snapshot}}
     else
       {:error, reason} ->
@@ -137,7 +137,7 @@ defmodule AshCell.Drain do
         # older generation, turning a recoverable local problem into lost writes.
         # Better to let the TTL expire while the newest bytes are still on a disk
         # somebody can recover from.
-        Logger.error("cell drain failed for #{inspect(tenant)}: #{inspect(reason)}")
+        Logger.error("cell drain failed for #{inspect(cell_key)}: #{inspect(reason)}")
         {:error, reason}
     end
   end
@@ -154,13 +154,13 @@ defmodule AshCell.Drain do
   reconnecting on the same millisecond is how a rolling deploy turns into a
   thundering herd against a cold node that is also busy rehydrating cells.
   """
-  def warn_holders(tenant, grace_ms) do
-    holders = AshCell.Holders.holders(tenant)
+  def warn_holders(cell_key, grace_ms) do
+    holders = AshCell.Holders.holders(cell_key)
     spread = max(div(grace_ms, 2), 1)
 
     for {pid, index} <- Enum.with_index(holders) do
       delay = if length(holders) > 1, do: div(index * spread, length(holders)), else: 0
-      Process.send_after(pid, {:ash_cell, :drain_imminent, tenant}, delay)
+      Process.send_after(pid, {:ash_cell, :drain_imminent, cell_key}, delay)
     end
 
     length(holders)
@@ -173,19 +173,19 @@ defmodule AshCell.Drain do
   proceeds either way; the flag exists so the report can say honestly whether a
   request was cut off.
   """
-  def await_quiescence(tenant, grace_ms) do
+  def await_quiescence(cell_key, grace_ms) do
     deadline = System.monotonic_time(:millisecond) + grace_ms
-    poll_until_quiet(tenant, deadline)
+    poll_until_quiet(cell_key, deadline)
   end
 
-  defp poll_until_quiet(tenant, deadline) do
+  defp poll_until_quiet(cell_key, deadline) do
     cond do
-      AshCell.Registry.active_binds(tenant) == 0 ->
+      AshCell.Registry.active_binds(cell_key) == 0 ->
         true
 
       System.monotonic_time(:millisecond) >= deadline ->
         Logger.warning(
-          "cell #{inspect(tenant)} still had #{AshCell.Registry.active_binds(tenant)} " <>
+          "cell #{inspect(cell_key)} still had #{AshCell.Registry.active_binds(cell_key)} " <>
             "bound process(es) at the drain deadline; taking it anyway"
         )
 
@@ -193,12 +193,12 @@ defmodule AshCell.Drain do
 
       true ->
         Process.sleep(@poll_ms)
-        poll_until_quiet(tenant, deadline)
+        poll_until_quiet(cell_key, deadline)
     end
   end
 
-  defp checkpoint(tenant) do
-    AshCell.checkpoint(tenant)
+  defp checkpoint(cell_key) do
+    AshCell.checkpoint(cell_key)
     :ok
   rescue
     e -> {:error, {:checkpoint_failed, e.__struct__}}
@@ -206,19 +206,19 @@ defmodule AshCell.Drain do
 
   # With no object store configured the cell is a local file and closing it is the
   # whole job; there is nowhere to hand it over to.
-  defp snapshot(_tenant, nil), do: {:ok, :no_store}
+  defp snapshot(_cell_key, nil), do: {:ok, :no_store}
 
-  defp snapshot(tenant, store) do
-    case AshCell.Manager.generation(tenant) do
+  defp snapshot(cell_key, store) do
+    case AshCell.Manager.generation(cell_key) do
       nil -> {:ok, :no_lease}
-      generation -> AshCell.Replicator.snapshot(store, tenant, generation)
+      generation -> AshCell.Replicator.snapshot(store, cell_key, generation)
     end
   end
 
-  defp release_lease(_tenant, nil), do: :ok
+  defp release_lease(_cell_key, nil), do: :ok
 
-  defp release_lease(tenant, store) do
-    case AshCell.Manager.lease(tenant) do
+  defp release_lease(cell_key, store) do
+    case AshCell.Manager.lease(cell_key) do
       nil -> :ok
       lease -> AshCell.Lease.release(store, lease)
     end

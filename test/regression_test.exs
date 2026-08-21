@@ -51,7 +51,7 @@ defmodule AshCell.RegressionTest do
 
       for i <- 1..12, do: AshCell.with_tenant("filler_#{i}", fn -> :ok end)
 
-      assert "pinned" in AshCell.resident_tenants()
+      assert "pinned" in AshCell.resident_cells()
     end
 
     test "binding recovers when the cell dies mid-call" do
@@ -130,7 +130,7 @@ defmodule AshCell.RegressionTest do
 
   defp read_bound do
     TenantPatient
-    |> Ash.Query.set_tenant(AshCell.bound_tenant())
+    |> Ash.Query.set_tenant(AshCell.bound_cell())
     |> Ash.read!()
     |> Enum.map(& &1.name)
   end

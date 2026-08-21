@@ -2,7 +2,7 @@ defmodule AshCell.Lease do
   @moduledoc """
   Single-writer ownership of a cell, coordinated entirely by the bucket.
 
-  A lease is one object per tenant, claimed with a conditional write. Two nodes
+  A lease is one object per cell, claimed with a conditional write. Two nodes
   can race and exactly one wins, with no membership protocol, no failure detector,
   no quorum, and no need for the nodes to know that the other exists.
 
@@ -32,33 +32,33 @@ defmodule AshCell.Lease do
   Whether that is acceptable depends on the application.
   """
 
-  defstruct [:tenant, :owner, :etag, :expires_at, :generation]
+  defstruct [:cell_key, :owner, :etag, :expires_at, :generation]
 
   @default_ttl_ms 30_000
 
-  def key(tenant), do: "cells/#{tenant}/lease.json"
+  def key(cell_key), do: "cells/#{AshCell.CellKey.encode(cell_key)}/lease.json"
 
   @doc """
-  Attempts to take ownership of `tenant`.
+  Attempts to take ownership of `cell_key`.
 
   Returns `{:ok, lease}` if this owner now holds it, or `{:error, {:held_by, owner}}`
   if someone else does and their lease has not expired.
   """
-  def claim(store, tenant, owner, opts \\ []) do
+  def claim(store, cell_key, owner, opts \\ []) do
     ttl = Keyword.get(opts, :ttl_ms, @default_ttl_ms)
     now = System.system_time(:millisecond)
 
-    case AshCell.ObjectStore.get(store, key(tenant)) do
+    case AshCell.ObjectStore.get(store, key(cell_key)) do
       {:error, :not_found} ->
         # Nobody has ever held it. If-None-Match means only one racer can create it.
-        write(store, tenant, owner, now + ttl, 1, if_none_match: true)
+        write(store, cell_key, owner, now + ttl, 1, if_none_match: true)
 
       {:ok, body, etag} ->
         held = Jason.decode!(body)
 
         cond do
           held["owner"] == owner ->
-            write(store, tenant, owner, now + ttl, held["generation"], if_match: etag)
+            write(store, cell_key, owner, now + ttl, held["generation"], if_match: etag)
 
           held["expires_at"] > now ->
             {:error, {:held_by, held["owner"]}}
@@ -66,7 +66,7 @@ defmodule AshCell.Lease do
           true ->
             # Expired. If-Match means only one racer can take it over, and the
             # generation bump fences the previous owner's in-flight writes.
-            write(store, tenant, owner, now + ttl, held["generation"] + 1, if_match: etag)
+            write(store, cell_key, owner, now + ttl, held["generation"] + 1, if_match: etag)
         end
 
       {:error, reason} ->
@@ -79,17 +79,17 @@ defmodule AshCell.Lease do
     ttl = Keyword.get(opts, :ttl_ms, @default_ttl_ms)
     expires = System.system_time(:millisecond) + ttl
 
-    write(store, lease.tenant, lease.owner, expires, lease.generation, if_match: lease.etag)
+    write(store, lease.cell_key, lease.owner, expires, lease.generation, if_match: lease.etag)
   end
 
   @doc "Releases a lease so another node can take it without waiting for expiry."
   def release(store, %__MODULE__{} = lease) do
-    AshCell.ObjectStore.delete(store, key(lease.tenant))
+    AshCell.ObjectStore.delete(store, key(lease.cell_key))
   end
 
   @doc "Who holds this lease right now, if anyone."
-  def holder(store, tenant) do
-    case AshCell.ObjectStore.get(store, key(tenant)) do
+  def holder(store, cell_key) do
+    case AshCell.ObjectStore.get(store, key(cell_key)) do
       {:ok, body, _etag} ->
         held = Jason.decode!(body)
 
@@ -107,15 +107,15 @@ defmodule AshCell.Lease do
     end
   end
 
-  defp write(store, tenant, owner, expires_at, generation, opts) do
+  defp write(store, cell_key, owner, expires_at, generation, opts) do
     body =
       Jason.encode!(%{owner: owner, expires_at: expires_at, generation: generation})
 
-    case AshCell.ObjectStore.put(store, key(tenant), body, opts) do
+    case AshCell.ObjectStore.put(store, key(cell_key), body, opts) do
       {:ok, etag} ->
         {:ok,
          %__MODULE__{
-           tenant: tenant,
+           cell_key: cell_key,
            owner: owner,
            etag: etag,
            expires_at: expires_at,
@@ -124,7 +124,7 @@ defmodule AshCell.Lease do
 
       {:error, :precondition_failed} ->
         # Lost the race. Report who won rather than the raw failure.
-        case holder(store, tenant) do
+        case holder(store, cell_key) do
           {:ok, other} when is_binary(other) -> {:error, {:held_by, other}}
           _ -> {:error, :precondition_failed}
         end

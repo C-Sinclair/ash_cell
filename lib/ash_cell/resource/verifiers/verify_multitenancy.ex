@@ -26,9 +26,12 @@ defmodule AshCell.Resource.Verifiers.VerifyMultitenancy do
            message: """
            AshCell.Resource requires `strategy :context`, got #{inspect(other)}.
 
-           A cell is one database per tenant, and the tenant is how AshCell finds
-           which database to open. Under any other strategy Ash leaves the tenant
-           unset and every action would run against the default repo.
+           The tenant is how AshCell finds which database to open: `AshCell.CellKey`
+           resolves it to a cell key, and the cell key names the file. That cut
+           defaults to one cell per tenant but does not have to be — it can be per
+           entity, per time window, per workload. What every cut needs is a tenant
+           to resolve *from*, and under any other strategy Ash leaves the tenant
+           unset, so every action would run against the default repo.
 
                multitenancy do
                  strategy :context

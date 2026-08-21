@@ -97,7 +97,7 @@ defmodule AshCell.BinderTest do
       {:ok, _} = BoundPatient.create("Row", tenant: "acme")
       Ash.read!(BoundPatient, tenant: "acme")
 
-      assert nil == AshCell.bound_tenant()
+      assert nil == AshCell.bound_cell()
     end
 
     test "an outer binding survives an action on a different tenant" do
@@ -107,7 +107,7 @@ defmodule AshCell.BinderTest do
       assert {["Globex Row"], "acme"} =
                AshCell.with_tenant("acme", fn ->
                  rows = Ash.read!(BoundPatient, tenant: "globex") |> Enum.map(& &1.name)
-                 {rows, AshCell.bound_tenant()}
+                 {rows, AshCell.bound_cell()}
                end)
     end
 
@@ -115,7 +115,7 @@ defmodule AshCell.BinderTest do
       {:ok, _} = BoundPatient.create("Row", tenant: "acme")
 
       assert {:error, _} = BoundPatient.create(nil, tenant: "acme")
-      assert nil == AshCell.bound_tenant()
+      assert nil == AshCell.bound_cell()
 
       # A leaked bind count would leave the cell looking permanently busy, and a
       # drain would never see it as quiescent.
@@ -129,7 +129,7 @@ defmodule AshCell.BinderTest do
     end
 
     test "the error names the tenant when its cell cannot be bound" do
-      error = %AshCell.CellUnavailableError{tenant: "acme", reason: :cell_closing}
+      error = %AshCell.CellUnavailableError{cell_key: "acme", reason: :cell_closing}
 
       assert Exception.message(error) =~ "acme"
       assert Exception.message(error) =~ "was not run"

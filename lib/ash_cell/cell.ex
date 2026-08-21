@@ -1,26 +1,26 @@
 defmodule AshCell.Cell do
   @moduledoc """
-  One tenant's database, owned by one process.
+  One cell's database, owned by one process.
 
   The cell starts an `Ecto.Repo` *instance* (`start_link(name: nil, ...)`) against
-  that tenant's own SQLite file and holds it for the cell's lifetime. Callers never
+  that cell's own SQLite file and holds it for the cell's lifetime. Callers never
   talk to this process to run queries; they ask for the repo pid and bind it into
   their own process with `Ecto.Repo.put_dynamic_repo/1`, which is the only way Ecto
   routes a module call to a specific instance.
 
   Owning the repo here rather than in the caller means the connection outlives any
-  one request, so a warm tenant is genuinely warm, and it dies with the cell rather
+  one request, so a warm cell is genuinely warm, and it dies with the cell rather
   than leaking when a caller crashes.
   """
   use GenServer, restart: :temporary
 
   require Logger
 
-  defstruct [:tenant, :repo, :repo_pid, :path, :opened_at, :schema_version, queries: 0]
+  defstruct [:cell_key, :repo, :repo_pid, :path, :opened_at, :schema_version, queries: 0]
 
   def start_link(opts) do
-    tenant = Keyword.fetch!(opts, :tenant)
-    GenServer.start_link(__MODULE__, opts, name: AshCell.Registry.via(tenant))
+    cell_key = Keyword.fetch!(opts, :cell_key)
+    GenServer.start_link(__MODULE__, opts, name: AshCell.Registry.via(cell_key))
   end
 
   @doc "The repo instance pid for this cell. Bind it with `put_dynamic_repo/1`."
@@ -35,7 +35,7 @@ defmodule AshCell.Cell do
   def init(opts) do
     Process.flag(:trap_exit, true)
 
-    tenant = Keyword.fetch!(opts, :tenant)
+    cell_key = Keyword.fetch!(opts, :cell_key)
     repo = Keyword.fetch!(opts, :repo)
     path = Keyword.fetch!(opts, :path)
     key = Keyword.get(opts, :key)
@@ -56,7 +56,7 @@ defmodule AshCell.Cell do
          {:ok, version} <- migrate(repo, repo_pid, migrator) do
       {:ok,
        %__MODULE__{
-         tenant: tenant,
+         cell_key: cell_key,
          repo: repo,
          repo_pid: repo_pid,
          path: path,
@@ -104,7 +104,7 @@ defmodule AshCell.Cell do
   def handle_call(:info, _from, state) do
     {:reply,
      %{
-       tenant: state.tenant,
+       cell_key: state.cell_key,
        path: state.path,
        queries: state.queries,
        schema_version: state.schema_version,

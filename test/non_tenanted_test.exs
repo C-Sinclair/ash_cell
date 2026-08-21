@@ -56,7 +56,7 @@ defmodule AshCell.NonTenantedTest do
     end
 
     test "and it needs no binding of any kind" do
-      refute AshCell.bound_tenant()
+      refute AshCell.bound_cell()
       assert {:ok, _} = Note.create("Unbound")
       assert {:ok, [_]} = Note.read()
     end
@@ -70,7 +70,7 @@ defmodule AshCell.NonTenantedTest do
 
       # Read it back with nothing bound: if the binding had leaked, the row would
       # be inside acme's cell file and this would come back empty.
-      refute AshCell.bound_tenant()
+      refute AshCell.bound_cell()
       assert {:ok, [%{body: "Written While Bound To Acme"}]} = Note.read()
     end
 

@@ -26,35 +26,35 @@ defmodule AshCell.Holders do
   Idempotent per process: a LiveView that re-binds on every callback registers
   once, not once per keystroke.
   """
-  def hold(tenant) do
-    if holding?(tenant) do
+  def hold(cell_key) do
+    if holding?(cell_key) do
       :ok
     else
-      Registry.register(__MODULE__, tenant, :held)
+      Registry.register(__MODULE__, cell_key, :held)
       :ok
     end
   end
 
-  @doc "Releases this process's hold on `tenant`."
-  def release(tenant) do
-    Registry.unregister(__MODULE__, tenant)
+  @doc "Releases this process's hold on `cell_key`."
+  def release(cell_key) do
+    Registry.unregister(__MODULE__, cell_key)
     :ok
   end
 
-  @doc "Whether the calling process already holds `tenant`."
-  def holding?(tenant) do
-    Registry.keys(__MODULE__, self()) |> Enum.member?(tenant)
+  @doc "Whether the calling process already holds `cell_key`."
+  def holding?(cell_key) do
+    Registry.keys(__MODULE__, self()) |> Enum.member?(cell_key)
   end
 
-  @doc "Processes currently holding `tenant`."
-  def holders(tenant) do
-    Registry.lookup(__MODULE__, tenant) |> Enum.map(&elem(&1, 0))
+  @doc "Processes currently holding `cell_key`."
+  def holders(cell_key) do
+    Registry.lookup(__MODULE__, cell_key) |> Enum.map(&elem(&1, 0))
   end
 
-  @doc "How many processes hold `tenant`."
-  def count(tenant), do: length(holders(tenant))
+  @doc "How many processes hold `cell_key`."
+  def count(cell_key), do: length(holders(cell_key))
 
-  @doc "Every tenant with at least one holder, and how many."
+  @doc "Every cell_key with at least one holder, and how many."
   def fleet do
     __MODULE__
     |> Registry.select([{{:"$1", :_, :_}, [], [:"$1"]}])

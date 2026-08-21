@@ -73,7 +73,7 @@ defmodule AshCellTest do
 
       assert path in removed
       refute File.exists?(path)
-      refute "doomed" in AshCell.resident_tenants()
+      refute "doomed" in AshCell.resident_cells()
     end
 
     test "deleting one tenant leaves others untouched" do
@@ -88,25 +88,25 @@ defmodule AshCellTest do
 
   describe "residency" do
     test "cells start on demand and appear in the fleet" do
-      assert [] = AshCell.resident_tenants()
+      assert [] = AshCell.resident_cells()
 
       create("acme", "One")
 
-      assert ["acme"] = AshCell.resident_tenants()
-      assert [%{tenant: "acme", queries: queries, bytes: bytes}] = AshCell.fleet()
+      assert ["acme"] = AshCell.resident_cells()
+      assert [%{cell_key: "acme", queries: queries, bytes: bytes}] = AshCell.fleet()
       assert queries > 0
       assert bytes > 0
     end
 
     test "evicts the least recently used cell past max_resident, without data loss" do
       for tenant <- ["t1", "t2", "t3"], do: create(tenant, "row for #{tenant}")
-      assert length(AshCell.resident_tenants()) == 3
+      assert length(AshCell.resident_cells()) == 3
 
       create("t4", "row for t4")
 
       # Bounded residency, and the evicted tenant's data is still there when it
       # is next asked for — eviction closes a connection, it does not lose rows.
-      assert length(AshCell.resident_tenants()) <= 3
+      assert length(AshCell.resident_cells()) <= 3
       assert ["row for t1"] = names("t1")
     end
 
@@ -114,7 +114,7 @@ defmodule AshCellTest do
       create("acme", "Persisted")
       :ok = AshCell.close("acme")
 
-      refute "acme" in AshCell.resident_tenants()
+      refute "acme" in AshCell.resident_cells()
       assert ["Persisted"] = names("acme")
     end
   end

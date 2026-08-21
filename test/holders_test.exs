@@ -44,7 +44,7 @@ defmodule AshCell.HoldersTest do
       assert :ok = AshCell.release_held("acme")
 
       assert AshCell.Registry.active_binds("acme") == 0
-      assert AshCell.bound_tenant() == nil
+      assert AshCell.bound_cell() == nil
     end
   end
 

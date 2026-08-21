@@ -97,7 +97,7 @@ defmodule AshCell.MigrationTest do
       start_fleet(dir, AshCell.FailingMigrations)
 
       assert {:error, _reason} = AshCell.Manager.ensure_started("doomed")
-      refute "doomed" in AshCell.resident_tenants()
+      refute "doomed" in AshCell.resident_cells()
     end
 
     test "the failure is recorded so an unattended outage is visible", %{dir: dir} do
@@ -144,7 +144,7 @@ defmodule AshCell.MigrationTest do
       assert [{"a", {:ok, 3}}, {"b", {:ok, 3}}, {"c", {:ok, 3}}] = results
       # Cells are closed afterwards so a deploy-time sweep does not leave the whole
       # fleet resident.
-      assert AshCell.resident_tenants() == []
+      assert AshCell.resident_cells() == []
     end
 
     test "reports failures per tenant rather than aborting the sweep", %{dir: dir} do

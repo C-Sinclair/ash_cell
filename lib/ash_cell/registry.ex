@@ -1,6 +1,6 @@
 defmodule AshCell.Registry do
   @moduledoc """
-  Maps a tenant to its resident cell process, and counts who is using it.
+  Maps a cell key to its resident cell process, and counts who is using it.
 
   The bind count exists for draining. Queries never pass through the cell process
   — they go straight to the repo instance — so a cell has no way to know whether
@@ -29,16 +29,16 @@ defmodule AshCell.Registry do
     Registry.start_link(keys: :unique, name: __MODULE__)
   end
 
-  def via(tenant), do: {:via, Registry, {__MODULE__, tenant}}
+  def via(cell_key), do: {:via, Registry, {__MODULE__, cell_key}}
 
-  def lookup(tenant) do
-    case Registry.lookup(__MODULE__, tenant) do
+  def lookup(cell_key) do
+    case Registry.lookup(__MODULE__, cell_key) do
       [{pid, _}] -> {:ok, pid}
       [] -> :error
     end
   end
 
-  def resident_tenants do
+  def resident_cells do
     Registry.select(__MODULE__, [{{:"$1", :_, :_}, [], [:"$1"]}])
   end
 
@@ -51,15 +51,15 @@ defmodule AshCell.Registry do
   new binder arrive before the close lands. Closing has to *stop* new binds, not
   merely observe their absence.
   """
-  def begin_closing(tenant), do: :ets.insert(@binds, {closing_key(tenant), true})
+  def begin_closing(cell_key), do: :ets.insert(@binds, {closing_key(cell_key), true})
 
-  @doc "Clears the closing mark for `tenant`."
-  def end_closing(tenant), do: :ets.delete(@binds, closing_key(tenant))
+  @doc "Clears the closing mark for `cell_key`."
+  def end_closing(cell_key), do: :ets.delete(@binds, closing_key(cell_key))
 
-  @doc "Whether `tenant` is being closed right now."
-  def closing?(tenant), do: :ets.member(@binds, closing_key(tenant))
+  @doc "Whether `cell_key` is being closed right now."
+  def closing?(cell_key), do: :ets.member(@binds, closing_key(cell_key))
 
-  defp closing_key(tenant), do: {:closing, tenant}
+  defp closing_key(cell_key), do: {:closing, cell_key}
 
   @doc """
   Records that a process has bound `tenant`, unless it is closing.
@@ -67,11 +67,11 @@ defmodule AshCell.Registry do
   Returns `:ok`, or `:closing` so the caller can wait for the close to finish and
   bind to the cell that replaces it.
   """
-  def bound(tenant) do
-    if closing?(tenant) do
+  def bound(cell_key) do
+    if closing?(cell_key) do
       :closing
     else
-      bump(tenant, 1)
+      bump(cell_key, 1)
       :ok
     end
   end
@@ -83,9 +83,9 @@ defmodule AshCell.Registry do
   must not drive the count negative, because a negative count reads as quiescent
   and would let a drain proceed over live work.
   """
-  def unbound(tenant) do
-    case bump(tenant, -1) do
-      n when n < 0 -> :ets.insert(@binds, {tenant, 0})
+  def unbound(cell_key) do
+    case bump(cell_key, -1) do
+      n when n < 0 -> :ets.insert(@binds, {cell_key, 0})
       _ -> :ok
     end
 
@@ -106,36 +106,36 @@ defmodule AshCell.Registry do
   A drain waits on the sum. Counting only the transient half would report a cell
   as idle between a user's keystrokes.
   """
-  def active_binds(tenant) do
+  def active_binds(cell_key) do
     transient =
-      case :ets.lookup(@binds, tenant) do
-        [{^tenant, count}] -> max(count, 0)
+      case :ets.lookup(@binds, cell_key) do
+        [{^cell_key, count}] -> max(count, 0)
         [] -> 0
       end
 
-    transient + AshCell.Holders.count(tenant)
+    transient + AshCell.Holders.count(cell_key)
   end
 
   @doc "Transient bind count only, ignoring long-lived holders."
-  def transient_binds(tenant) do
-    case :ets.lookup(@binds, tenant) do
-      [{^tenant, count}] -> max(count, 0)
+  def transient_binds(cell_key) do
+    case :ets.lookup(@binds, cell_key) do
+      [{^cell_key, count}] -> max(count, 0)
       [] -> 0
     end
   end
 
-  @doc "Bind counts for every tenant with outstanding work."
+  @doc "Bind counts for every cell_key with outstanding work."
   def active_fleet do
     @binds
     |> :ets.tab2list()
-    |> Enum.reject(fn {_tenant, count} -> count <= 0 end)
+    |> Enum.reject(fn {_cell_key, count} -> count <= 0 end)
     |> Map.new()
   end
 
   @doc false
-  def forget(tenant), do: :ets.delete(@binds, tenant)
+  def forget(cell_key), do: :ets.delete(@binds, cell_key)
 
-  defp bump(tenant, delta) do
-    :ets.update_counter(@binds, tenant, {2, delta}, {tenant, 0})
+  defp bump(cell_key, delta) do
+    :ets.update_counter(@binds, cell_key, {2, delta}, {cell_key, 0})
   end
 end

@@ -11,7 +11,7 @@ defmodule AshCell.OwnershipTest do
   alias AshCell.{Lease, Ownership}
 
   defp lease(owner \\ "node-a", generation \\ 1) do
-    %Lease{tenant: "acme", owner: owner, etag: "etag", generation: generation, expires_at: 0}
+    %Lease{cell_key: "acme", owner: owner, etag: "etag", generation: generation, expires_at: 0}
   end
 
   describe "bounded staleness" do

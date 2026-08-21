@@ -35,7 +35,7 @@ defmodule AshCell do
   `assert_bound!/0` exists to make that a loud failure rather than a quiet one.
   """
 
-  @tenant_key {__MODULE__, :bound_tenant}
+  @cell_key {__MODULE__, :bound_cell}
 
   @doc false
   def child_spec(opts) do
@@ -50,22 +50,22 @@ defmodule AshCell do
   GenServer that only ever serves one tenant.
   """
   @spec bind(term()) :: {:ok, term()} | {:error, term()}
-  def bind(tenant), do: bind(tenant, 1)
+  def bind(tenant), do: bind_key(AshCell.CellKey.resolve(tenant), 1)
 
   # A cell can die between being looked up and being asked for its repo pid --
   # evicted for inactivity, closed by a drain, or restarted after a crash. The
   # window is small and entirely normal, so a caller should not see an exit from
   # a GenServer it never knew about: resolve again and try once more.
-  defp bind(tenant, attempts_left) do
-    with :ok <- await_not_closing(tenant),
-         {:ok, cell} <- AshCell.Manager.ensure_started(tenant),
+  defp bind_key(cell_key, attempts_left) do
+    with :ok <- await_not_closing(cell_key),
+         {:ok, cell} <- AshCell.Manager.ensure_started(cell_key),
          {:ok, repo_pid} <- fetch_repo_pid(cell),
-         :ok <- AshCell.Registry.bound(tenant) do
+         :ok <- AshCell.Registry.bound(cell_key) do
       repo = repo()
-      previous = {repo.get_dynamic_repo(), Process.get(@tenant_key)}
+      previous = {repo.get_dynamic_repo(), Process.get(@cell_key)}
 
       repo.put_dynamic_repo(repo_pid)
-      Process.put(@tenant_key, tenant)
+      Process.put(@cell_key, cell_key)
       AshCell.Cell.note_query(cell)
 
       {:ok, previous}
@@ -73,13 +73,13 @@ defmodule AshCell do
       # The cell began closing between the check and the count. Undo and retry
       # against whatever replaces it.
       :closing when attempts_left > 0 ->
-        bind(tenant, attempts_left - 1)
+        bind_key(cell_key, attempts_left - 1)
 
       :closing ->
         {:error, :cell_closing}
 
       {:error, :cell_died} when attempts_left > 0 ->
-        bind(tenant, attempts_left - 1)
+        bind_key(cell_key, attempts_left - 1)
 
       {:error, :cell_died} ->
         {:error, :cell_unavailable}
@@ -91,11 +91,11 @@ defmodule AshCell do
 
   # Bounded, because a close that never completes must surface as an error rather
   # than blocking a request forever.
-  defp await_not_closing(tenant, attempts \\ 100) do
+  defp await_not_closing(cell_key, attempts \\ 100) do
     cond do
-      not AshCell.Registry.closing?(tenant) -> :ok
+      not AshCell.Registry.closing?(cell_key) -> :ok
       attempts == 0 -> {:error, :cell_closing}
-      true -> Process.sleep(10) && await_not_closing(tenant, attempts - 1)
+      true -> Process.sleep(10) && await_not_closing(cell_key, attempts - 1)
     end
   end
 
@@ -111,7 +111,7 @@ defmodule AshCell do
     # Release the binding this process currently holds before adopting the
     # previous one, so a nested with_tenant/2 decrements the inner tenant rather
     # than leaking a count that would make it look permanently busy to a drain.
-    case Process.get(@tenant_key) do
+    case Process.get(@cell_key) do
       nil -> :ok
       current -> AshCell.Registry.unbound(current)
     end
@@ -119,8 +119,8 @@ defmodule AshCell do
     repo().put_dynamic_repo(dynamic_repo)
 
     case tenant do
-      nil -> Process.delete(@tenant_key)
-      other -> Process.put(@tenant_key, other)
+      nil -> Process.delete(@cell_key)
+      other -> Process.put(@cell_key, other)
     end
 
     :ok
@@ -141,11 +141,13 @@ defmodule AshCell do
   """
   @spec bind_held(term()) :: :ok | {:error, term()}
   def bind_held(tenant) do
-    with {:ok, cell} <- AshCell.Manager.ensure_started(tenant) do
+    cell_key = AshCell.CellKey.resolve(tenant)
+
+    with {:ok, cell} <- AshCell.Manager.ensure_started(cell_key) do
       repo = repo()
       repo.put_dynamic_repo(AshCell.Cell.repo_pid(cell))
-      Process.put(@tenant_key, tenant)
-      AshCell.Holders.hold(tenant)
+      Process.put(@cell_key, cell_key)
+      AshCell.Holders.hold(cell_key)
       :ok
     end
   end
@@ -153,8 +155,8 @@ defmodule AshCell do
   @doc "Releases a hold taken with `bind_held/1`."
   @spec release_held(term()) :: :ok
   def release_held(tenant) do
-    AshCell.Holders.release(tenant)
-    Process.delete(@tenant_key)
+    AshCell.Holders.release(AshCell.CellKey.resolve(tenant))
+    Process.delete(@cell_key)
     repo().put_dynamic_repo(repo())
     :ok
   end
@@ -209,25 +211,30 @@ defmodule AshCell do
   """
   @spec transaction(term(), (-> result)) :: {:ok, result} | {:error, term()} when result: var
   def transaction(tenant, fun) when is_function(fun, 0) do
-    assert_same_cell!(tenant)
+    assert_same_cell!(AshCell.CellKey.resolve(tenant))
 
     deferring_notifications(fn ->
       with_tenant(tenant, fn -> repo().transaction(fun, mode: :immediate) end)
     end)
   end
 
-  defp assert_same_cell!(tenant) do
-    current = bound_tenant()
+  # Compared as cell keys rather than as tenants, which is what makes this correct
+  # under a resolver that is not the identity. Two tenants that resolve to one
+  # cell -- adjacent dates in one monthly window, say -- are one connection and one
+  # transaction, and refusing that would be wrong. Two tenants that resolve to two
+  # cells are refused however similar they look.
+  defp assert_same_cell!(cell_key) do
+    current = bound_cell()
 
-    if current && current != tenant && in_transaction?() do
+    if current && current != cell_key && in_transaction?() do
       raise ArgumentError, """
-      cannot open a transaction on #{inspect(tenant)} while one is open on \
+      cannot open a transaction on cell #{inspect(cell_key)} while one is open on \
       #{inspect(current)}.
 
-      Each tenant is a separate SQLite file with its own connection, so these \
+      Each cell is a separate SQLite file with its own connection, so these \
       would be two independent transactions: the inner one would commit on its \
       own and survive a rollback of the outer. Finish one before opening the \
-      other, and if the work genuinely spans tenants, make that ordering explicit \
+      other, and if the work genuinely spans cells, make that ordering explicit \
       rather than implicit in a nesting.
       """
     end
@@ -288,13 +295,18 @@ defmodule AshCell do
   end
 
   @doc """
-  The tenant bound to this process, or `nil`.
+  The key of the cell bound to this process, or `nil`.
+
+  This is the *cell key*, not the tenant it was resolved from. Under a resolver
+  that maps several tenants to one cell — a time window, a workload split — the
+  tenant is not recoverable from here, and the cell key is the thing every caller
+  actually wants to compare.
 
   Read from the process dictionary rather than derived by searching the registry
   for a matching pid, so it stays correct when a cell restarts and gets a new pid.
   """
-  @spec bound_tenant() :: term() | nil
-  def bound_tenant, do: Process.get(@tenant_key)
+  @spec bound_cell() :: term() | nil
+  def bound_cell, do: Process.get(@cell_key)
 
   @doc """
   Raises unless this process is bound to a tenant.
@@ -306,7 +318,7 @@ defmodule AshCell do
   """
   @spec assert_bound!() :: term()
   def assert_bound! do
-    case bound_tenant() do
+    case bound_cell() do
       nil ->
         raise ArgumentError, """
         no AshCell tenant is bound to this process.
@@ -350,7 +362,7 @@ defmodule AshCell do
   defdelegate path_for(tenant), to: AshCell.Manager
 
   @doc "Tenants with a resident (open) cell right now."
-  defdelegate resident_tenants(), to: AshCell.Registry
+  defdelegate resident_cells(), to: AshCell.Registry
 
   @doc """
   Hands every resident cell over and releases its lease.
@@ -362,8 +374,8 @@ defmodule AshCell do
 
   @doc "Per-cell stats for the resident fleet."
   def fleet do
-    for tenant <- AshCell.Registry.resident_tenants(),
-        {:ok, pid} <- [AshCell.Registry.lookup(tenant)] do
+    for cell_key <- AshCell.Registry.resident_cells(),
+        {:ok, pid} <- [AshCell.Registry.lookup(cell_key)] do
       AshCell.Cell.info(pid)
     end
   end
