@@ -160,7 +160,8 @@ mix setup                           # deps, npm install, assets
 mix phx.server
 ```
 
-Open http://localhost:4000, create a document, then open it in a second window. Type in both
+Open http://localhost:4010 (`PORT` overrides it — the workspace has more than one
+demo app), create a document, then open it in a second window. Type in both
 at once, in the same word — nothing is lost, and you can watch the other caret move. The
 sidebar shows the update log growing; **Compact the log** collapses it into a snapshot and
 reports what it merged, while both editors keep typing.

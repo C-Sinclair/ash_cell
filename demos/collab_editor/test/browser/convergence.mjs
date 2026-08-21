@@ -18,7 +18,7 @@ import {createRequire} from "node:module"
 // Playwright lives in assets/node_modules, where the rest of the JS toolchain is.
 const {chromium} = createRequire(import.meta.url)("../../assets/node_modules/playwright")
 
-const BASE = process.env.BASE_URL || "http://127.0.0.1:4000"
+const BASE = process.env.BASE_URL || `http://127.0.0.1:${process.env.PORT || 4010}`
 const CHARS = 30
 
 const failures = []
