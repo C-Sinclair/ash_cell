@@ -27,9 +27,11 @@ defmodule AshCell.MixProject do
   defp deps do
     [
       {:ash, "~> 3.31"},
-      # Local fork — Stage 0 adds context multitenancy (ash_sqlite#127).
-      # Swap for a hex/git dep once those changes land upstream.
-      {:ash_sqlite, path: "../ash_sqlite", override: true},
+      # A fork, not a preference: upstream cannot express database-per-tenant.
+      # See the Requirements section of the README. Resolved from the sibling
+      # checkout when there is one, so edits there are picked up on the next
+      # compile, and from git otherwise, so a standalone clone builds.
+      {:ash_sqlite, ash_sqlite_dep()},
       {:ecto_sqlite3, "~> 0.12"},
       {:ecto_sql, "~> 3.13"},
       {:jason, "~> 1.0"},
@@ -41,6 +43,14 @@ defmodule AshCell.MixProject do
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
     ]
+  end
+
+  defp ash_sqlite_dep do
+    if File.dir?("../ash_sqlite") do
+      [path: "../ash_sqlite", override: true]
+    else
+      [github: "C-Sinclair/ash_sqlite", override: true]
+    end
   end
 
   defp aliases do
