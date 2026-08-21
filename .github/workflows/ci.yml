@@ -1,0 +1,90 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  MIX_ENV: test
+
+jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Install MinIO
+        run: |
+          curl -fsSL -o /usr/local/bin/minio https://dl.min.io/server/minio/release/linux-amd64/minio
+          curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x /usr/local/bin/minio /usr/local/bin/mc
+
+      # Seventeen tests fail without a reachable object store, deliberately: they
+      # test conditional-write semantics, and a mock would only confirm our own
+      # reading of them. So the store comes up before the suite, not per test.
+      - name: Start MinIO
+        run: scripts/minio.sh
+
+      - run: mix deps.get
+
+      - run: mix format --check-formatted
+
+      # Warnings are errors here and not locally, so a warning introduced in a
+      # refactor cannot ride along unnoticed in a green run.
+      - run: mix compile --warnings-as-errors
+
+      - run: mix test
+
+  cipher:
+    name: SQLCipher
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Install SQLCipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev
+
+      # Its own job, with no cache shared with `test`, because the thing being
+      # checked is what exqlite linked against *at compile time*. A cached build
+      # from the plain-SQLite job would answer the wrong question, and answering
+      # it wrongly is the exact failure mode `mix cipher.check` exists to catch:
+      # a missing EXQLITE_USE_SYSTEM silently yields plain SQLite that cannot
+      # open an encrypted database.
+      - name: Compile exqlite against SQLCipher
+        env:
+          EXQLITE_USE_SYSTEM: "1"
+          EXQLITE_SYSTEM_CFLAGS: "-I/usr/include/sqlcipher"
+          EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
+        run: |
+          mix deps.get
+          mix deps.compile exqlite --force
+
+      - name: Check SQLCipher is linked
+        run: mix cipher.check
