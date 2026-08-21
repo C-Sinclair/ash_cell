@@ -73,7 +73,22 @@ This is now the single biggest design decision, and it should be made before Sta
 | Elixir LTX implementation | none | required (none exists; format is simple, binary-pattern-match friendly) |
 | Pre-ack side-effect problem | **does not arise** | must re-plumb Ash notifiers/hooks, LiveView diffs, PubSub, Oban enqueues into a post-ack phase |
 | Scales to many DBs | explicit v0.5 design goal ("hundreds or thousands of databases" in one directory, one supervising process) | our problem |
+| Object-store op cost | amortised — one PUT per L0 interval per cell, independent of write rate | **scales with commit rate**, and this is fatal at scale (see below) |
 | Effort | weeks | months |
+
+**The op-cost arithmetic, because it is the argument that settles the row above.**
+celld v0.3.0's release notes work it through for a Discord-shaped workload — every channel a
+cell, ~4B messages/day. A PUT per commit is ~46k PUT/s, which at S3's request pricing is
+**~$600k/month in write operations alone**, before a byte of storage. Buffering commits
+behind a shared log cuts it to ~300 PUT/s, **~$4k/month** — a 150x reduction — and takes the
+write off the S3 round trip as a side effect (~5ms local instead of ~50ms).
+
+Two consequences for this table. First, per-commit segment PUTs are not merely slower than
+Path A, they are *economically impossible* for any high-write fleet, so Path B as drawn was
+never viable at scale regardless of the side-effect problem. Second, the fix is not a
+durability compromise: celld keeps RPO=0 by moving the ack from the bucket to a quorum of
+three peer disks, and treats the bucket as an asynchronous archive. That is a third path,
+not a cheaper Path B, and it is not costed here.
 
 **Recommendation: Path A for v1.** Almost the entire adversarial-review nightmare —
 uncommittable local transactions, retry ambiguity between "my PUT succeeded" and "I was
