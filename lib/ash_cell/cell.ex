@@ -43,11 +43,11 @@ defmodule AshCell.Cell do
 
     File.mkdir_p!(Path.dirname(path))
 
+    # backoff_type: :stop makes an unopenable database fail immediately instead
+    # of DBConnection retrying for seconds. A cell that cannot be opened is
+    # almost never a transient condition -- it is a wrong or destroyed key, or a
+    # corrupt file -- and retrying turns a clear failure into a hang.
     repo_opts =
-      # backoff_type: :stop makes an unopenable database fail immediately instead
-      # of DBConnection retrying for seconds. A cell that cannot be opened is
-      # almost never a transient condition -- it is a wrong or destroyed key, or a
-      # corrupt file -- and retrying turns a clear failure into a hang.
       [name: nil, database: path, pool_size: 1, backoff_type: :stop]
       |> maybe_put_key(key)
 

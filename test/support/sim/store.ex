@@ -13,7 +13,8 @@ defmodule AshCell.Sim.Store do
 
   defstruct objects: %{}, faults: [], log: []
 
-  @type result :: {:ok, etag :: String.t()} | {:error, :precondition_failed | :not_found | :unavailable}
+  @type result ::
+          {:ok, etag :: String.t()} | {:error, :precondition_failed | :not_found | :unavailable}
 
   def new(opts \\ []), do: %__MODULE__{faults: Keyword.get(opts, :faults, [])}
 

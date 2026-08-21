@@ -29,7 +29,9 @@ defmodule AshCell.DSTStage0Test do
       store = Store.new()
       {{:ok, etag}, store} = Store.put(store, "k", "v1")
 
-      assert {{:error, :precondition_failed}, store} = Store.put(store, "k", "v2", if_match: "stale")
+      assert {{:error, :precondition_failed}, store} =
+               Store.put(store, "k", "v2", if_match: "stale")
+
       assert {{:ok, _}, _} = Store.put(store, "k", "v2", if_match: etag)
     end
 
@@ -216,6 +218,10 @@ defmodule AshCell.DSTStage0Test do
   defp bump_local(world, id, tenant) do
     node = World.node(world, id)
     generation = Map.get(node.local_generation, tenant, 0) + 1
-    Map.put(world.nodes, id, %{node | local_generation: Map.put(node.local_generation, tenant, generation)})
+
+    Map.put(world.nodes, id, %{
+      node
+      | local_generation: Map.put(node.local_generation, tenant, generation)
+    })
   end
 end

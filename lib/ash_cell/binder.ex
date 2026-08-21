@@ -56,7 +56,9 @@ defmodule AshCell.Binder do
         # Raising rather than running unbound. An unbound statement in a
         # database-per-tenant layout does not fail, it succeeds against the wrong
         # database, and the data layer has no way to tell that it has happened.
-        raise AshCell.CellUnavailableError, cell_key: AshCell.CellKey.resolve(tenant), reason: reason
+        raise AshCell.CellUnavailableError,
+          cell_key: AshCell.CellKey.resolve(tenant),
+          reason: reason
     end
   end
 end

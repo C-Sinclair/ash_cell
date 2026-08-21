@@ -142,9 +142,7 @@ defmodule AshCell.ContextTest do
     test "a raising body still restores the previous binding" do
       write("acme", "Row")
 
-      catch_error(
-        AshCell.with_tenant("acme", fn -> raise "boom" end)
-      )
+      catch_error(AshCell.with_tenant("acme", fn -> raise "boom" end))
 
       assert nil == AshCell.bound_cell()
     end

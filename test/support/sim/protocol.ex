@@ -156,8 +156,10 @@ defmodule AshCell.Sim.Protocol do
           node = %{
             node
             | snapshotted: Map.put(node.snapshotted, tenant, generation),
-              local_txid: Map.put(node.local_txid, tenant, Map.get(node.local_txid, tenant, 0) + 1)
+              local_txid:
+                Map.put(node.local_txid, tenant, Map.get(node.local_txid, tenant, 0) + 1)
           }
+
           world |> Map.put(:store, store) |> World.put_node(node)
 
         {{:error, _}, store} ->
@@ -178,6 +180,7 @@ defmodule AshCell.Sim.Protocol do
   @doc "Node `id` loses everything it had not persisted."
   def crash(world, id) do
     node = World.node(world, id)
+
     World.put_node(world, %{
       node
       | held: %{},

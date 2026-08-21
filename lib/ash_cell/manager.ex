@@ -218,17 +218,19 @@ defmodule AshCell.Manager do
       :error ->
         state = evict_if_needed(state)
 
-        spec =
-          {AshCell.Cell,
-           cell_key: cell_key,
-           repo: state.repo,
-           path: path(state, cell_key),
-           key: key_for(state, cell_key),
-           # Encryption is expected whenever the fleet was given a key function.
-           # The cell uses this to tell "this fleet is unencrypted" apart from
-           # "this tenant's key is gone", which must fail rather than degrade.
-           encrypted?: not is_nil(state.key_for),
-           migrator: state.migrator}
+        # Encryption is expected whenever the fleet was given a key function. The
+        # cell uses `encrypted?` to tell "this fleet is unencrypted" apart from
+        # "this cell's key is gone", which must fail rather than degrade.
+        opts = [
+          cell_key: cell_key,
+          repo: state.repo,
+          path: path(state, cell_key),
+          key: key_for(state, cell_key),
+          encrypted?: not is_nil(state.key_for),
+          migrator: state.migrator
+        ]
+
+        spec = {AshCell.Cell, opts}
 
         case DynamicSupervisor.start_child(AshCell.CellSupervisor, spec) do
           {:ok, pid} ->

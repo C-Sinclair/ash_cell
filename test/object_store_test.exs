@@ -38,7 +38,9 @@ defmodule AshCell.ObjectStoreTest do
       key = "probe/" <> unique_tenant("k")
 
       assert {:ok, _etag} = ObjectStore.put(store, key, "first", if_none_match: true)
-      assert {:error, :precondition_failed} = ObjectStore.put(store, key, "second", if_none_match: true)
+
+      assert {:error, :precondition_failed} =
+               ObjectStore.put(store, key, "second", if_none_match: true)
 
       # The loser did not overwrite the winner.
       assert {:ok, "first", _} = ObjectStore.get(store, key)
@@ -50,7 +52,9 @@ defmodule AshCell.ObjectStoreTest do
       {:ok, _second} = ObjectStore.put(store, key, "v2", if_match: first_etag)
 
       # first_etag is now stale, so a writer holding it must lose.
-      assert {:error, :precondition_failed} = ObjectStore.put(store, key, "v3", if_match: first_etag)
+      assert {:error, :precondition_failed} =
+               ObjectStore.put(store, key, "v3", if_match: first_etag)
+
       assert {:ok, "v2", _} = ObjectStore.get(store, key)
     end
   end

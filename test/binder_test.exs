@@ -87,7 +87,9 @@ defmodule AshCell.BinderTest do
     test "a bulk create binds" do
       Ash.bulk_create!([%{name: "A"}, %{name: "B"}], BoundPatient, :create, tenant: "acme")
 
-      assert ["A", "B"] = Ash.read!(BoundPatient, tenant: "acme") |> Enum.map(& &1.name) |> Enum.sort()
+      assert ["A", "B"] =
+               Ash.read!(BoundPatient, tenant: "acme") |> Enum.map(& &1.name) |> Enum.sort()
+
       assert [] = Ash.read!(BoundPatient, tenant: "globex")
     end
   end

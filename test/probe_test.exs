@@ -87,7 +87,8 @@ defmodule AshCell.ProbeTest do
           |> Ash.read!()
         end
 
-      assert Exception.message(error) =~ "Modules (the first argument of apply) must always be an atom"
+      assert Exception.message(error) =~
+               "Modules (the first argument of apply) must always be an atom"
     end
 
     test "selecting the declared module explicitly is accepted", %{tenants: t} do

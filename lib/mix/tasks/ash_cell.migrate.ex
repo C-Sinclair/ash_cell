@@ -19,7 +19,9 @@ defmodule Mix.Tasks.AshCell.Migrate do
   @impl Mix.Task
   def run(argv) do
     {opts, _, _} =
-      OptionParser.parse(argv, strict: [tenants: :string, tenants_from: :string, keep_open: :boolean])
+      OptionParser.parse(argv,
+        strict: [tenants: :string, tenants_from: :string, keep_open: :boolean]
+      )
 
     Mix.Task.run("app.start")
 

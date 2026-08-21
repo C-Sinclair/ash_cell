@@ -164,7 +164,9 @@ defmodule AshCell.DrainHandoffTest do
 
       assert Map.has_key?(report.failed, tenant)
       assert healthy in report.drained
-      assert {:ok, %Lease{owner: "node-b"}} = Lease.claim(store, healthy, "node-b", ttl_ms: 60_000)
+
+      assert {:ok, %Lease{owner: "node-b"}} =
+               Lease.claim(store, healthy, "node-b", ttl_ms: 60_000)
     end
   end
 
