@@ -54,6 +54,49 @@ defmodule AshCell.Replicator do
   def snapshot_key(cell_key, txid), do: "#{snapshot_prefix(cell_key)}#{pad(txid)}.db"
 
   @doc """
+  Ships `cell_key` to the store: reserve a txid, snapshot, record the outcome.
+
+  The one path for getting a cell into the bucket, used by the periodic snapshot in
+  `AshCell.Cell` and by `AshCell.Drain`. Having two would mean two places to get
+  the txid bookkeeping right, and the bookkeeping is the fence.
+
+  Returns `{:ok, :no_lease}` for a fleet that does not replicate and
+  `{:ok, :in_flight}` when this cell is already being shipped -- both ordinary, and
+  distinct from `{:error, :precondition_failed}`, which means this node has been
+  fenced and its snapshot is refused.
+  """
+  def ship(store, cell_key) do
+    case AshCell.Manager.claim_txid(cell_key) do
+      {:ok, txid} ->
+        finish(store, cell_key, txid)
+
+      {:error, :no_lease} ->
+        {:ok, :no_lease}
+
+      {:error, :ship_in_flight} ->
+        {:ok, :in_flight}
+    end
+  end
+
+  defp finish(store, cell_key, txid) do
+    case snapshot(store, cell_key, txid) do
+      {:ok, result} ->
+        AshCell.Manager.committed(cell_key, txid)
+        {:ok, result}
+
+      {:error, reason} ->
+        AshCell.Manager.abandoned(cell_key)
+        {:error, reason}
+    end
+  rescue
+    # The reservation must be released even when the snapshot raises, or the cell
+    # is never shipped again and the failure is a silent one.
+    e ->
+      AshCell.Manager.abandoned(cell_key)
+      reraise e, __STACKTRACE__
+  end
+
+  @doc """
   Checkpoints the cell's database and writes it to the object store at `txid`.
 
   Returns `{:error, :precondition_failed}` if that txid already exists, which is
@@ -61,7 +104,7 @@ defmodule AshCell.Replicator do
   rather than continue.
   """
   def snapshot(store, cell_key, txid) do
-    :ok = AshCell.checkpoint(cell_key)
+    :ok = AshCell.checkpoint_cell(cell_key)
     path = AshCell.path_for(cell_key)
 
     with {:ok, bytes} <- File.read(path),

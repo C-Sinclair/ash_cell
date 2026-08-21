@@ -52,6 +52,18 @@ defmodule AshCell do
   @spec bind(term()) :: {:ok, term()} | {:error, term()}
   def bind(tenant), do: bind_key(AshCell.CellKey.resolve(tenant), 1)
 
+  @doc """
+  Binds to a cell by its key, skipping resolution.
+
+  For code that already holds a cell key rather than a tenant — replication, the
+  drain, operational tooling. Resolving an already-resolved key is a no-op under
+  the default resolver and wrong under any other: a resolver that maps
+  `{"acme", date}` to `"acme:2026-08"` has no sensible answer for `"acme:2026-08"`
+  as an input, and may not fail loudly when asked.
+  """
+  @spec bind_cell(term()) :: {:ok, term()} | {:error, term()}
+  def bind_cell(cell_key), do: bind_key(cell_key, 1)
+
   # A cell can die between being looked up and being asked for its repo pid --
   # evicted for inactivity, closed by a drain, or restarted after a crash. The
   # window is small and entirely normal, so a caller should not see an exit from
@@ -172,8 +184,20 @@ defmodule AshCell do
   """
   @spec with_tenant(term(), (-> result)) :: result when result: var
   def with_tenant(tenant, fun) when is_function(fun, 0) do
-    {:ok, previous} = bind(tenant)
+    with_bound(bind(tenant), fun)
+  end
 
+  @doc """
+  Runs `fun` with the process bound to `cell_key`, skipping resolution.
+
+  The cell-key counterpart of `with_tenant/2`. See `bind_cell/1`.
+  """
+  @spec with_cell(term(), (-> result)) :: result when result: var
+  def with_cell(cell_key, fun) when is_function(fun, 0) do
+    with_bound(bind_cell(cell_key), fun)
+  end
+
+  defp with_bound({:ok, previous}, fun) do
     try do
       fun.()
     after
@@ -343,9 +367,19 @@ defmodule AshCell do
   copies, or ships the file — replication, export, or proving on-disk contents —
   must checkpoint first or it will silently miss recent writes.
   """
-  def checkpoint(tenant) do
-    with_tenant(tenant, fn ->
-      {:ok, pid} = AshCell.Manager.ensure_started(tenant)
+  def checkpoint(tenant), do: checkpoint_cell(AshCell.CellKey.resolve(tenant))
+
+  @doc """
+  Checkpoints a cell by its key, skipping resolution. See `bind_cell/1`.
+
+  `TRUNCATE` rather than `PASSIVE` so the WAL file returns to zero bytes. That is
+  what `AshCell.SnapshotPolicy` reads to decide whether anything is unshipped: a
+  passive checkpoint leaves the file at its high-water mark, so a cell nobody wrote
+  to would look permanently dirty and ship on every tick, forever.
+  """
+  def checkpoint_cell(cell_key) do
+    with_cell(cell_key, fn ->
+      {:ok, pid} = AshCell.Manager.ensure_started(cell_key)
       repo_pid = AshCell.Cell.repo_pid(pid)
       Ecto.Adapters.SQL.query!(repo_pid, "PRAGMA wal_checkpoint(TRUNCATE)", [])
       :ok

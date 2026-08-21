@@ -208,18 +208,7 @@ defmodule AshCell.Drain do
   # whole job; there is nowhere to hand it over to.
   defp snapshot(_cell_key, nil), do: {:ok, :no_store}
 
-  defp snapshot(cell_key, store) do
-    case AshCell.Manager.next_txid(cell_key) do
-      nil ->
-        {:ok, :no_lease}
-
-      txid ->
-        with {:ok, result} <- AshCell.Replicator.snapshot(store, cell_key, txid) do
-          AshCell.Manager.commit_txid(cell_key, txid)
-          {:ok, result}
-        end
-    end
-  end
+  defp snapshot(cell_key, store), do: AshCell.Replicator.ship(store, cell_key)
 
   defp release_lease(_cell_key, nil), do: :ok
 

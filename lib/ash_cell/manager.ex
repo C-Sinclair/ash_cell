@@ -27,9 +27,11 @@ defmodule AshCell.Manager do
     :max_resident,
     :store,
     :owner,
+    :snapshot,
     lru: %{},
     quarantined: %{},
     leases: %{},
+    shipping: MapSet.new(),
     sealed?: false
   ]
 
@@ -82,21 +84,38 @@ defmodule AshCell.Manager do
   end
 
   @doc """
-  Claims the next txid for `cell_key` from this node's local counter.
+  Reserves the next txid for `cell_key` from this node's local counter.
 
   Deliberately local. Reading the high-water mark from the object store here would
   undo the fence: a node that has lost the cell would read its successor's mark and
   write safely above it, so its conditional PUT would succeed and it would
   acknowledge a write that is about to be superseded. The mark is read once, when
-  the lease is taken, and only advances here.
+  the lease is taken, and only advances through `committed/2`.
 
-  Returns `nil` if this node holds no lease for the cell, which is not an error —
-  a fleet with no object store never takes one.
+  Reserving also excludes a second concurrent shipment of the same cell. Two
+  callers -- a periodic snapshot and a drain, say -- would otherwise both be handed
+  the same number, and the loser's conditional PUT would be refused. That refusal is
+  indistinguishable at the call site from being fenced by another *node*, so a
+  harmless local overlap would read as "this node has lost the cell". Every reserve
+  must be matched by `committed/2` or `abandoned/1`.
+
+    * `{:error, :no_lease}` -- this node holds no lease, which is ordinary for a
+      fleet with no object store
+    * `{:error, :ship_in_flight}` -- somebody else is already shipping this cell
   """
-  def next_txid(cell_key), do: GenServer.call(__MODULE__, {:next_txid, cell_key})
+  def claim_txid(cell_key), do: GenServer.call(__MODULE__, {:claim_txid, cell_key})
 
-  @doc false
-  def commit_txid(cell_key, txid), do: GenServer.call(__MODULE__, {:commit_txid, cell_key, txid})
+  @doc "Records a shipment that reached the store, advancing the local mark."
+  def committed(cell_key, txid), do: GenServer.call(__MODULE__, {:committed, cell_key, txid})
+
+  @doc """
+  Records a shipment that did not reach the store, leaving the mark where it was.
+
+  Not advancing is the point. The next attempt has to collide on the same txid, or
+  a fenced writer would step past the successor that fenced it and start succeeding
+  again.
+  """
+  def abandoned(cell_key), do: GenServer.call(__MODULE__, {:abandoned, cell_key})
 
   @doc false
   def put_lease(cell_key, lease), do: GenServer.call(__MODULE__, {:put_lease, cell_key, lease})
@@ -189,6 +208,7 @@ defmodule AshCell.Manager do
       migrator: Keyword.get(opts, :migrator),
       max_resident: Keyword.get(opts, :max_resident, @default_max_resident),
       store: Keyword.get(opts, :store),
+      snapshot: AshCell.SnapshotPolicy.new(Keyword.get(opts, :snapshot), opts),
       owner: Keyword.get(opts, :owner, to_string(node()))
     }
 
@@ -227,7 +247,9 @@ defmodule AshCell.Manager do
           path: path(state, cell_key),
           key: key_for(state, cell_key),
           encrypted?: not is_nil(state.key_for),
-          migrator: state.migrator
+          migrator: state.migrator,
+          store: state.store,
+          policy: state.snapshot
         ]
 
         spec = {AshCell.Cell, opts}
@@ -286,25 +308,34 @@ defmodule AshCell.Manager do
     {:reply, :ok, %{state | leases: Map.put(state.leases, cell_key, lease)}}
   end
 
-  def handle_call({:next_txid, cell_key}, _from, state) do
-    case state.leases[cell_key] do
-      nil -> {:reply, nil, state}
-      lease -> {:reply, (lease.txid || 0) + 1, state}
+  def handle_call({:claim_txid, cell_key}, _from, state) do
+    cond do
+      is_nil(state.leases[cell_key]) ->
+        {:reply, {:error, :no_lease}, state}
+
+      MapSet.member?(state.shipping, cell_key) ->
+        {:reply, {:error, :ship_in_flight}, state}
+
+      true ->
+        txid = (state.leases[cell_key].txid || 0) + 1
+        {:reply, {:ok, txid}, %{state | shipping: MapSet.put(state.shipping, cell_key)}}
     end
   end
 
-  # Advanced only after the conditional PUT succeeded. A refused write must leave
-  # the counter alone: the next attempt has to collide on the same txid, or the
-  # writer would silently skip past the successor that fenced it.
-  def handle_call({:commit_txid, cell_key, txid}, _from, state) do
+  def handle_call({:committed, cell_key, txid}, _from, state) do
+    state = %{state | shipping: MapSet.delete(state.shipping, cell_key)}
+
     case state.leases[cell_key] do
       nil ->
         {:reply, :ok, state}
 
       lease ->
-        leases = Map.put(state.leases, cell_key, %{lease | txid: txid})
-        {:reply, :ok, %{state | leases: leases}}
+        {:reply, :ok, %{state | leases: Map.put(state.leases, cell_key, %{lease | txid: txid})}}
     end
+  end
+
+  def handle_call({:abandoned, cell_key}, _from, state) do
+    {:reply, :ok, %{state | shipping: MapSet.delete(state.shipping, cell_key)}}
   end
 
   def handle_call(:quarantined, _from, state), do: {:reply, state.quarantined, state}

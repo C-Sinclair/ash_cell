@@ -196,7 +196,7 @@ defmodule AshCell.FencingTest do
     end
 
     test "advances from the lease, not from the store", %{store: store} do
-      # The locality that makes the fence work. If next_txid/1 consulted the
+      # The locality that makes the fence work. If claim_txid/1 consulted the
       # bucket, a displaced node would read its successor's mark and write safely
       # past it -- succeeding, acknowledging, and losing the write later.
       cell = unique_cell("local")
@@ -204,28 +204,58 @@ defmodule AshCell.FencingTest do
       {:ok, lease} = Lease.claim(store, cell, "node-a", ttl_ms: 60_000)
       :ok = AshCell.Manager.put_lease(cell, lease)
 
-      assert AshCell.Manager.next_txid(cell) == 1
+      assert {:ok, 1} = AshCell.Manager.claim_txid(cell)
+      :ok = AshCell.Manager.abandoned(cell)
 
       # A successor ships several times. This node must not notice.
       for txid <- 1..3, do: {:ok, _} = ship(store, cell, txid)
 
-      assert AshCell.Manager.next_txid(cell) == 1
+      assert {:ok, 1} = AshCell.Manager.claim_txid(cell)
     end
 
-    test "advances only on a committed snapshot", %{store: store} do
+    test "advances only on a committed shipment", %{store: store} do
       cell = unique_cell("commit")
 
       {:ok, lease} = Lease.claim(store, cell, "node-a", ttl_ms: 60_000)
       :ok = AshCell.Manager.put_lease(cell, lease)
 
-      assert AshCell.Manager.next_txid(cell) == 1
-      :ok = AshCell.Manager.commit_txid(cell, 1)
-      assert AshCell.Manager.next_txid(cell) == 2
+      assert {:ok, 1} = AshCell.Manager.claim_txid(cell)
+      :ok = AshCell.Manager.committed(cell, 1)
+      assert {:ok, 2} = AshCell.Manager.claim_txid(cell)
     end
 
-    test "is nil for a cell this node holds no lease on" do
+    test "does not advance for a shipment that was abandoned", %{store: store} do
+      # A refused write must leave the mark alone, or the next attempt steps past
+      # the successor that fenced it and starts succeeding again.
+      cell = unique_cell("abandon")
+
+      {:ok, lease} = Lease.claim(store, cell, "node-a", ttl_ms: 60_000)
+      :ok = AshCell.Manager.put_lease(cell, lease)
+
+      assert {:ok, 1} = AshCell.Manager.claim_txid(cell)
+      :ok = AshCell.Manager.abandoned(cell)
+      assert {:ok, 1} = AshCell.Manager.claim_txid(cell)
+    end
+
+    test "refuses a second concurrent shipment of the same cell", %{store: store} do
+      # Two callers handed the same txid would have one refused, and that refusal
+      # is indistinguishable from being fenced by another node. A local overlap
+      # must not read as "this node has lost the cell".
+      cell = unique_cell("overlap")
+
+      {:ok, lease} = Lease.claim(store, cell, "node-a", ttl_ms: 60_000)
+      :ok = AshCell.Manager.put_lease(cell, lease)
+
+      assert {:ok, 1} = AshCell.Manager.claim_txid(cell)
+      assert {:error, :ship_in_flight} = AshCell.Manager.claim_txid(cell)
+
+      :ok = AshCell.Manager.committed(cell, 1)
+      assert {:ok, 2} = AshCell.Manager.claim_txid(cell)
+    end
+
+    test "reports no lease for a cell this node does not hold" do
       # A fleet with no object store never takes a lease, which is not an error.
-      assert AshCell.Manager.next_txid(unique_cell("unheld")) == nil
+      assert {:error, :no_lease} = AshCell.Manager.claim_txid(unique_cell("unheld"))
     end
   end
 end

@@ -16,7 +16,19 @@ defmodule AshCell.Cell do
 
   require Logger
 
-  defstruct [:cell_key, :repo, :repo_pid, :path, :opened_at, :schema_version, queries: 0]
+  defstruct [
+    :cell_key,
+    :repo,
+    :repo_pid,
+    :path,
+    :opened_at,
+    :schema_version,
+    :store,
+    :policy,
+    :last_ship_at,
+    queries: 0,
+    ships: 0
+  ]
 
   def start_link(opts) do
     cell_key = Keyword.fetch!(opts, :cell_key)
@@ -31,6 +43,9 @@ defmodule AshCell.Cell do
 
   def note_query(pid), do: GenServer.cast(pid, :note_query)
 
+  @doc false
+  def ship_now(pid), do: GenServer.call(pid, :ship_now, 30_000)
+
   @impl true
   def init(opts) do
     Process.flag(:trap_exit, true)
@@ -40,6 +55,7 @@ defmodule AshCell.Cell do
     path = Keyword.fetch!(opts, :path)
     key = Keyword.get(opts, :key)
     migrator = Keyword.get(opts, :migrator)
+    policy = Keyword.get(opts, :policy) || %AshCell.SnapshotPolicy{enabled?: false}
 
     File.mkdir_p!(Path.dirname(path))
 
@@ -54,6 +70,12 @@ defmodule AshCell.Cell do
     with :ok <- verify_key(key, Keyword.get(opts, :encrypted?, false)),
          {:ok, repo_pid} <- repo.start_link(repo_opts),
          {:ok, version} <- migrate(repo, repo_pid, migrator) do
+      now = System.monotonic_time(:millisecond)
+
+      if policy.enabled? do
+        Process.send_after(self(), :maybe_ship, AshCell.SnapshotPolicy.initial_delay(policy))
+      end
+
       {:ok,
        %__MODULE__{
          cell_key: cell_key,
@@ -61,7 +83,12 @@ defmodule AshCell.Cell do
          repo_pid: repo_pid,
          path: path,
          schema_version: version,
-         opened_at: System.monotonic_time(:millisecond)
+         store: Keyword.get(opts, :store),
+         policy: policy,
+         # Counted from activation, so a cell that never ships is still eventually
+         # old enough to, rather than waiting for a first shipment that never comes.
+         last_ship_at: now,
+         opened_at: now
        }}
     else
       {:error, reason} -> {:stop, reason}
@@ -107,10 +134,18 @@ defmodule AshCell.Cell do
        cell_key: state.cell_key,
        path: state.path,
        queries: state.queries,
+       ships: state.ships,
        schema_version: state.schema_version,
        bytes: file_size(state.path),
+       wal_bytes: AshCell.SnapshotPolicy.wal_bytes(state.path),
        resident_ms: System.monotonic_time(:millisecond) - state.opened_at
      }, state}
+  end
+
+  # Synchronous, for tests and for a targeted operational shipment. The periodic
+  # path deliberately does not go through here -- see handle_info(:maybe_ship, _).
+  def handle_call(:ship_now, _from, state) do
+    {:reply, AshCell.Replicator.ship(state.store, state.cell_key), mark_shipped(state)}
   end
 
   @impl true
@@ -121,7 +156,56 @@ defmodule AshCell.Cell do
     {:stop, reason, state}
   end
 
+  def handle_info(:maybe_ship, state) do
+    age_ms = System.monotonic_time(:millisecond) - state.last_ship_at
+    wal_bytes = AshCell.SnapshotPolicy.wal_bytes(state.path)
+
+    state =
+      if AshCell.SnapshotPolicy.ship?(state.policy, wal_bytes, age_ms) do
+        ship_off_process(state)
+        mark_shipped(state)
+      else
+        state
+      end
+
+    Process.send_after(self(), :maybe_ship, AshCell.SnapshotPolicy.next_delay(state.policy))
+    {:noreply, state}
+  end
+
   def handle_info(_, state), do: {:noreply, state}
+
+  # Off this process on purpose. Shipping is a whole-file PUT, so doing it in the
+  # cell would block every query for this cell for as long as the upload takes --
+  # turning a durability improvement into a latency spike proportional to database
+  # size. Overlapping shipments are not a hazard here because
+  # `AshCell.Manager.claim_txid/1` refuses a second one.
+  defp ship_off_process(state) do
+    cell_key = state.cell_key
+    store = state.store
+
+    Task.start(fn ->
+      case AshCell.Replicator.ship(store, cell_key) do
+        {:ok, _} ->
+          :ok
+
+        # Being refused here means another node holds this cell and has already
+        # shipped past us. Loud, because this node is still serving a cell it does
+        # not own, and reads it answers are stale. `AshCell.Ownership` is what
+        # actually stops those; this is the signal that it needs to.
+        {:error, :precondition_failed} ->
+          Logger.error("cell #{inspect(cell_key)} was fenced while shipping; it is not ours")
+
+        {:error, reason} ->
+          Logger.warning("cell #{inspect(cell_key)} snapshot failed: #{inspect(reason)}")
+      end
+    end)
+  end
+
+  # Stamped when the attempt starts rather than when it succeeds, so a store that
+  # is down does not make every tick re-attempt immediately.
+  defp mark_shipped(state) do
+    %{state | last_ship_at: System.monotonic_time(:millisecond), ships: state.ships + 1}
+  end
 
   defp file_size(path) do
     case File.stat(path) do
