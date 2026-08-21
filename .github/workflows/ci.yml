@@ -88,3 +88,183 @@ jobs:
 
       - name: Check SQLCipher is linked
         run: mix cipher.check
+
+  demo-collab-editor:
+    name: Demo — collaborative editor
+    runs-on: ubuntu-latest
+
+    # The demo is the only place several claims are checked end to end: that a cell
+    # cut at a record still works, that the SQLCipher key really is applied, and
+    # that compaction stays safe under concurrent writers. A change to the library
+    # that breaks any of those is a change that breaks the demo, so it fails here
+    # rather than the next time somebody opens it.
+    env:
+      # The demo asserts its own plaintext is absent from the cell file, which is
+      # only true with SQLCipher linked in. A missing variable here fails silently
+      # in exqlite and loudly in `encryption_test.exs` — which is the point.
+      EXQLITE_USE_SYSTEM: "1"
+      EXQLITE_SYSTEM_CFLAGS: "-I/usr/include/sqlcipher"
+      EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
+      PORT: "4010"
+
+    steps:
+      # Checked out as siblings, because the demo depends on both this repo and the
+      # fork by relative path (`../..` and `../../../ash_sqlite`) exactly as a local
+      # workspace does. Testing it against published hex packages instead would stop
+      # testing the change in front of us.
+      - uses: actions/checkout@v4
+        with:
+          path: ash_cell
+
+      - uses: actions/checkout@v4
+        with:
+          repository: C-Sinclair/ash_sqlite
+          ref: main
+          path: ash_sqlite
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: ash_cell/.tool-versions
+          version-type: strict
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install SQLCipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ash_cell/demos/collab_editor/deps
+            ash_cell/demos/collab_editor/_build
+          key: ${{ runner.os }}-demo-collab-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('ash_cell/demos/collab_editor/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-demo-collab-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Fetch dependencies
+        working-directory: ash_cell/demos/collab_editor
+        run: mix deps.get
+
+      # Forced, because a cached build may hold an exqlite compiled without
+      # SQLCipher and the cache key cannot see which one it is.
+      - name: Compile exqlite against SQLCipher
+        working-directory: ash_cell/demos/collab_editor
+        run: mix deps.compile exqlite --force
+
+      - name: Check formatting
+        working-directory: ash_cell/demos/collab_editor
+        run: mix format --check-formatted
+
+      - name: Compile
+        working-directory: ash_cell/demos/collab_editor
+        env:
+          MIX_ENV: test
+        run: mix compile --warnings-as-errors
+
+      # Ordering under concurrent compaction, isolation between documents,
+      # encryption at rest, and the LiveView wire path.
+      - name: Test
+        working-directory: ash_cell/demos/collab_editor
+        run: mix test
+
+      # `assets.setup` also downloads the esbuild and tailwind binaries, which a
+      # clean runner does not have — and both installers are dev-only deps, so this
+      # has to run in dev rather than test.
+      - name: Install JS toolchain and dependencies
+        working-directory: ash_cell/demos/collab_editor
+        env:
+          MIX_ENV: dev
+        run: mix assets.setup
+
+      - name: Install Chromium
+        working-directory: ash_cell/demos/collab_editor/assets
+        run: npx playwright install --with-deps chromium
+
+      - name: Build assets
+        working-directory: ash_cell/demos/collab_editor
+        env:
+          MIX_ENV: dev
+        run: mix assets.build
+
+      # The claim that two people typing in the same paragraph lose nothing cannot
+      # be checked from Elixir: an earlier design passed the whole suite above and
+      # still dropped keystrokes once two real editors were typing at once.
+      - name: Start the server
+        working-directory: ash_cell/demos/collab_editor
+        env:
+          MIX_ENV: dev
+        run: |
+          mix phx.server > /tmp/collab-server.log 2>&1 &
+          for _ in $(seq 1 60); do
+            if curl -fsS -o /dev/null "http://127.0.0.1:$PORT/"; then exit 0; fi
+            sleep 2
+          done
+          echo "server did not come up on port $PORT"
+          cat /tmp/collab-server.log
+          exit 1
+
+      - name: Two-browser convergence test
+        working-directory: ash_cell/demos/collab_editor
+        run: node test/browser/convergence.mjs
+
+      - name: Server log
+        if: failure()
+        run: cat /tmp/collab-server.log
+
+  demo-console:
+    name: Demo — console (compiles)
+    runs-on: ubuntu-latest
+
+    # Compile only. The console demo's suite needs Postgres, MinIO and a seeded
+    # dataset, and its own tests are the generator's; what breaks it in practice is
+    # the library renaming something underneath it. That is a compile error, and
+    # this job exists because it happened: `Replicator.latest_generation/2` became
+    # `latest_txid/2` and the demo went on referring to the old name for a while
+    # with nothing to notice.
+    env:
+      MIX_ENV: test
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: ash_cell
+
+      - uses: actions/checkout@v4
+        with:
+          repository: C-Sinclair/ash_sqlite
+          ref: main
+          path: ash_sqlite
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: ash_cell/.tool-versions
+          version-type: strict
+
+      - name: Cache deps and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ash_cell/demos/console/deps
+            ash_cell/demos/console/_build
+          key: ${{ runner.os }}-demo-console-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('ash_cell/demos/console/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-demo-console-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Fetch dependencies
+        working-directory: ash_cell/demos/console
+        run: mix deps.get
+
+      - name: Check formatting
+        working-directory: ash_cell/demos/console
+        run: mix format --check-formatted
+
+      - name: Compile
+        working-directory: ash_cell/demos/console
+        run: mix compile --warnings-as-errors

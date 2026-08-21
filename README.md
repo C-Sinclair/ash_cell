@@ -374,6 +374,8 @@ Proven by the test suite, against real files and a real MinIO rather than mocks:
 | A drained node hands over immediately | successor claims without waiting the TTL |
 | Multi-step actions roll back | `test/transaction_test.exs` |
 | A cell taken mid-transaction does not half-apply | force-close between two writes |
+| Compaction stays safe under concurrent writers | `demos/collab_editor` — 15 appends racing 4 compactions |
+| Two people typing in one paragraph lose nothing | `demos/collab_editor/test/browser/convergence.mjs`, in two real browsers |
 
 Known limits, stated because they are real:
 
@@ -394,16 +396,76 @@ Known limits, stated because they are real:
 
 ## Demos
 
-Two runnable Phoenix applications under [`demos/`](demos), each with a README arguing what it
-proves and where it stops:
+Runnable Phoenix applications under [`demos/`](demos), each with a README arguing what it
+proves *and where it stops*. They are how the library's claims get checked against something
+that has to work rather than something that has to pass.
 
-- [`demos/console`](demos/console) — one cell per **tenant**. Physical isolation, encryption
-  at rest, single-writer ownership, object-store durability, N+1 immunity, and the deploy
-  drain, measured against Postgres on the same query.
-- [`demos/collab_editor`](demos/collab_editor) — one cell per **document**. A Lexical + Yjs
-  collaborative rich text editor, built to show that the cell boundary is a choice. Yjs makes
-  the editing converge; the cell makes *compaction* — merging the update log into a snapshot
-  and truncating it — safe, which is the read-modify-write a CRDT leaves unsolved.
+### [`demos/console`](demos/console) — one cell per **tenant**
+
+A multi-clinic healthcare SaaS: physical isolation, encryption at rest, single-writer
+ownership, object-store durability, N+1 immunity, and the deploy drain — each shown from
+outside the application's own claims (raw bytes off the disk, the `sqlite3` CLI's opinion of
+a cell file, objects fetched back out of the store). The speed panel runs the same Ash query
+against a properly indexed Postgres and against raw SQL, so the comparison can lose.
+
+### [`demos/collab_editor`](demos/collab_editor) — one cell per **document**
+
+A collaborative rich text editor, [Lexical](https://lexical.dev) + [Yjs](https://yjs.dev) in
+the browser, one cell per document on the server. It exists to answer a question the console
+demo cannot: **is the cell boundary a choice, or is it just "customer" with extra steps?**
+
+How it works:
+
+1. A document id is the tenant. `CollabEditor.CellKey` resolves it to the cell `doc:<uuid>`,
+   which lands on disk as `doc~3A<uuid>.db` — the `:` is escaped, and the encoding is
+   reversible, so two keys can never share a file.
+2. A keystroke produces a Yjs update. The browser pushes it over the LiveView channel; the
+   server stores it in that document's `updates` table with a monotonic `seq`, then broadcasts
+   it to the other clients on the document.
+3. Cursors and names travel the same channel and are **stored nowhere** — ephemeral state is
+   not worth the cell's single connection.
+4. `Editing.compact/1` merges the log into a snapshot with
+   [`y_ex`](https://hex.pm/packages/y_ex) (a Rust NIF over `yrs`) and truncates what it
+   merged, all in one transaction on the cell.
+
+**Why this is a good argument for cells, stated narrowly.** Yjs is what makes concurrent
+editing correct — updates commute, so two people typing inside the same word converge
+character by character and nobody loses a keystroke. That would be true on Postgres too, and
+the demo says so. What a CRDT does *not* give you is a safe place to keep the log:
+
+> Compaction is `read the whole log; merge; write the snapshot; delete what was merged`. Two
+> nodes doing that concurrently can each merge a log the other is truncating, and an update
+> landing between one node's read and its delete is **gone** — a corruption the CRDT cannot
+> repair, because the update is no longer anywhere. On shared storage this needs a lock, a
+> lease, or a designated compactor.
+
+A cell is all three by construction: one connection per document (`pool_size: 1`), a write
+lock taken up front (`BEGIN IMMEDIATE`), one node holding the document (the lease), and one
+transaction, so a cell taken mid-compaction aborts rather than leaving a truncated log with no
+snapshot.
+
+**How that is proven.** 28 Elixir tests, including 15 concurrent appends racing 4 concurrent
+compactions on one document with every update asserted to survive — plus nine checks in two
+real Chromium tabs (`test/browser/convergence.mjs`) typing 30 characters each into the same
+paragraph simultaneously:
+
+```
+ok   both tabs converge on the same text — 60 chars
+ok   no keystrokes lost — 30 a + 30 b of 30 each
+ok   the other caret is rendered — {"attached":true,"carets":1,"peers":2}
+ok   compaction merged the log — Merged 63 updates
+ok   editing still propagates after compaction
+ok   a fresh tab loads the compacted document — 66 chars
+```
+
+That browser test earned its place: an earlier version of the demo synced whole blocks with
+last-writer-wins resolution, passed the entire Elixir suite, and still dropped keystrokes —
+because the failure only exists once two real editors are typing at once.
+
+Both demos run in CI (`.github/workflows/ci.yml`), so a change to the library that breaks one
+fails there rather than the next time somebody opens it. The editor demo runs its full suite
+plus the two-browser test against a real server; the console demo is compiled against the
+working tree, which is the failure that actually happens when the library renames something.
 
 ## Documentation
 
