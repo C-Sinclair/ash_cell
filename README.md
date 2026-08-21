@@ -82,7 +82,8 @@ You also need **SQLCipher** if you want encrypted cells (see [Encryption](#encry
 
 ## Installation
 
-Not on Hex yet.
+**Not on Hex, and not able to be** until the fork's changes land upstream — Hex
+refuses a package with a git dependency. Install from git:
 
 ```elixir
 def deps do
@@ -472,7 +473,27 @@ working tree, which is the failure that actually happens when the library rename
 - [Design spec, staging plan, and verified constraints](docs/spec.md)
 - [Deterministic simulation testing](docs/dst.md)
 - [What the demos prove](demos/README.md)
+- [Changelog](CHANGELOG.md)
+
+### For coding agents
+
+[`usage-rules.md`](usage-rules.md) is written for LLM coding agents rather than
+people. It leads with the mistakes rather than the API, because most of what goes
+wrong here is silent — a shared resource sharing the cells' repo module writes its
+rows into whichever tenant happens to be bound, and nothing raises.
+
+If your project uses [`usage_rules`](https://hex.pm/packages/usage_rules), it will
+be picked up automatically. Otherwise, point your agent at it directly.
+
+## Contributing
+
+Bug reports, questions and pull requests are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for how to get a working checkout, which is not
+quite `mix deps.get && mix test`: the suite needs a running MinIO, and the
+encryption paths need an `exqlite` built against SQLCipher.
+
+This project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
 
 ## License
 
-MIT.
+MIT. See [LICENSE](LICENSE).
