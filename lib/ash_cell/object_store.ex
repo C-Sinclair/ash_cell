@@ -80,6 +80,67 @@ defmodule AshCell.ObjectStore do
 
   @doc "Keys under `prefix`. Used to find a tenant's newest snapshot."
   def list(store, prefix) do
+    with {:ok, entries} <- list_details(store, prefix) do
+      {:ok, Enum.map(entries, & &1.key)}
+    end
+  end
+
+  @doc """
+  Entries under `prefix` as `%{key:, bytes:, modified_at:}`.
+
+  The same request `list/2` makes, reading the rest of the response. A caller that
+  wants sizes would otherwise issue a HEAD per key, which for a cell's snapshot
+  history is one round trip per point in its history.
+
+  `modified_at` is the object store's clock, not this node's, and it is the time the
+  snapshot was *received* rather than the time the transaction committed. Close
+  enough to label a point in history for an operator; not a timestamp to order
+  anything by. The txid is what orders snapshots.
+  """
+  def list_details(store, prefix) do
+    with {:ok, body} <- list_body(store, prefix) do
+      {:ok,
+       ~r|<Contents>(.*?)</Contents>|s
+       |> Regex.scan(body)
+       |> Enum.map(fn [_, entry] -> parse_entry(entry) end)
+       |> Enum.reject(&is_nil(&1.key))}
+    end
+  end
+
+  defp parse_entry(entry) do
+    %{
+      key: tag(entry, "Key"),
+      bytes: entry |> tag("Size") |> to_integer(),
+      modified_at: entry |> tag("LastModified") |> to_datetime()
+    }
+  end
+
+  defp tag(entry, name) do
+    case Regex.run(~r|<#{name}>([^<]*)</#{name}>|, entry) do
+      [_, value] -> value
+      nil -> nil
+    end
+  end
+
+  defp to_integer(nil), do: nil
+
+  defp to_integer(value) do
+    case Integer.parse(value) do
+      {int, ""} -> int
+      _ -> nil
+    end
+  end
+
+  defp to_datetime(nil), do: nil
+
+  defp to_datetime(value) do
+    case DateTime.from_iso8601(value) do
+      {:ok, at, _offset} -> at
+      _ -> nil
+    end
+  end
+
+  defp list_body(store, prefix) do
     # Query parameters must go through Req's `:params` so they are part of the
     # canonical request SigV4 signs. Interpolating them into the URL string
     # produces a valid-looking request that the server rejects with 403.
@@ -92,7 +153,7 @@ defmodule AshCell.ObjectStore do
     |> Req.request()
     |> case do
       {:ok, %{status: 200, body: body}} ->
-        {:ok, Regex.scan(~r|<Key>([^<]+)</Key>|, to_string(body)) |> Enum.map(&Enum.at(&1, 1))}
+        {:ok, to_string(body)}
 
       {:ok, %{status: status}} ->
         {:error, {:unexpected_status, status}}

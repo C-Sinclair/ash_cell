@@ -38,6 +38,8 @@ live in [`../design/`](../design), and reference these.
 | [14](ADR-14-bounded-read-staleness.md) | Bound read staleness on the monotonic clock, and expose it as explicit modes | accepted |
 | [20](ADR-20-choose-a-durability-level.md) | Choose SQLite's durability level (`synchronous`) | **proposed — open** |
 | [21](ADR-21-close-does-not-await-the-connection.md) | Close does not wait for the connection; the rewrite path asks it to | accepted |
+| [22](ADR-22-where-the-tenancy-runtime-lives.md) | Keep AshCell's own tenant binder as the fork grows its own engine; the seam is the cell-key split | **proposed — seam open** |
+| [23](ADR-23-merge-by-fast-forward-or-refuse.md) | Merge a branch only when its origin has not moved; refuse divergence rather than reconcile it, and measure divergence by content digest | accepted |
 
 ## Performance, encryption, integration
 
@@ -70,10 +72,15 @@ false. Do not reintroduce the superseded position:
   cheap win. Measured, it is flat on point reads and 1.9× *worse* on a realistic join.
 - **[ADR-16](ADR-16-isolation-is-blast-radius.md)** — the compliance pitch was overstated. HIPAA
   does not require physical isolation.
+- **[ADR-23](ADR-23-merge-by-fast-forward-or-refuse.md)** — SQLite's file change counter was used
+  as the fast-forward test because it is documented to move on every write transaction. In WAL
+  mode it does not, so merge saw no divergence in a rewritten database and discarded the origin's
+  writes.
 
 ## Still open
 
-[ADR-20](ADR-20-choose-a-durability-level.md) is undecided and the risk is live. Beyond it, and
+[ADR-20](ADR-20-choose-a-durability-level.md) is undecided and the risk is live, and
+[ADR-22](ADR-22-where-the-tenancy-runtime-lives.md) has its direction settled but not its seam: AshCell keeps its own binder, and how much of the fork's tenancy engine it sits on top of is open. Beyond it, and
 not yet worth an ADR each: every deploy migrates every cell; reads are not fenced the way writes
 are; background jobs have no request boundary to route at; thundering herd on node loss;
 `ObjectStore.list/2` has no S3 pagination, so it breaks past 1000 snapshots; snapshot and restore

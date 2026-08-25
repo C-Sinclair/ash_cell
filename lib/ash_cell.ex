@@ -430,6 +430,48 @@ defmodule AshCell do
   """
   defdelegate drain(opts \\ []), to: AshCell.Drain, as: :run
 
+  @doc """
+  The snapshot timeline for a cell, oldest first. See `AshCell.History.list/2`.
+  """
+  def history(tenant) do
+    AshCell.History.list(require_store!(), AshCell.CellKey.resolve(tenant))
+  end
+
+  @doc """
+  Branches a cell at a point in its history. See `AshCell.Branch.fork/3`.
+
+      {:ok, record} = AshCell.fork("acme", to: "acme@pr-1234", from: 209)
+
+  Keep the returned record: `merge/1` needs it, and nothing in either cell
+  remembers where a branch came from.
+  """
+  def fork(tenant, opts) do
+    opts = Keyword.update!(opts, :to, &AshCell.CellKey.resolve/1)
+    AshCell.Branch.fork(require_store!(), AshCell.CellKey.resolve(tenant), opts)
+  end
+
+  @doc """
+  Fast-forwards a branch's origin to the branch, or refuses. See
+  `AshCell.Branch.merge/2`.
+  """
+  def merge(%AshCell.Branch{} = record), do: AshCell.Branch.merge(require_store!(), record)
+
+  @doc "Deletes a branch's database, snapshots, and lease. See `AshCell.Branch.drop/2`."
+  def drop_branch(%AshCell.Branch{} = record), do: AshCell.Branch.drop(require_store!(), record)
+
+  # Branching reads and writes the snapshot history, so unlike the rest of the
+  # runtime it cannot degrade gracefully for a fleet with no object store -- there
+  # would be no history to branch from. Say that, rather than failing later on a nil.
+  defp require_store! do
+    AshCell.Manager.store() ||
+      raise """
+      branching needs an object store, and this fleet has none configured.
+
+      A branch is a copy of a snapshot, and snapshots live in the store. Configure
+      one on the AshCell supervisor (`store:`) to use #{inspect(__MODULE__)}.fork/2.
+      """
+  end
+
   @doc "Per-cell stats for the resident fleet."
   def fleet do
     for cell_key <- AshCell.Registry.resident_cells(),

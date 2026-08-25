@@ -11,6 +11,7 @@ claim.
 | [`collab_editor/`](collab_editor) | one cell per **record** (a document) | That the cell boundary is a choice, not the tenant. A Lexical + Yjs collaborative editor where the CRDT handles convergence and the cell handles the thing a CRDT does not: safely collapsing an append-only update log into a snapshot. Verified in two real browsers. |
 | [`shroud/`](shroud) | one cell per **user**, plus a global Postgres | That a cell can hold data the *server* cannot read. Passkey-derived keys (WebAuthn PRF) that never leave the browser, per-audience sharing that works while the owner is offline, and account deletion by destroying key material rather than data. Measured the pull-model feed: 200 cells in 16.6 ms — and the 8.9x cliff when `max_resident` is undersized. |
 | [`rollout/`](rollout) | one cell per **release channel** | That the read/write ratio can be extreme in the other direction: a pointer written twice a week and read by every device on every check-in, with content-addressed blobs in the object store. |
+| [`branch/`](branch) | one cell per **branch** | That a cell's snapshot history is a timeline you can cut from. A branching SQLite service — provision, snapshot, branch at a txid, diverge, promote — where promotion is a fast-forward or a refusal, because two diverged SQLite databases have no correct automatic merge. |
 | [`vcs/`](vcs) | one cell per **repository** | That a cell fits a genuinely single-writer domain. A small version control system — Rust CLI, Ash server — where objects and the ref move in one transaction, so Git's `main.lock` and its optimistic retry are not needed. The losing push is refused, not reconciled. |
 
 They all depend on the library and the fork by relative path:
@@ -37,6 +38,8 @@ SQLite with no encryption. `mix cipher.check` in `ash_cell` is the guard; run it
 dependency rebuild.
 
 Demos that use the object store need MinIO; each README says so and gives the commands.
+`branch/` is the one that **cannot run without it** — a branch is a copy of a snapshot, and
+snapshots live in the bucket.
 
 `vcs/` additionally needs a Rust toolchain, because its client half is the `vcs` binary. Its
 end-to-end proof (`vcs/scripts/e2e.sh`) drives that binary against a listening server, so it is
