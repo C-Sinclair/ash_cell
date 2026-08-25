@@ -11,7 +11,7 @@ defmodule AshCell.Resource.Transformers.BindTenant do
 
   Set `tenant_binder` yourself and this leaves it alone, so a custom binder — one
   that resolves cells differently, or refuses on a node that no longer holds the
-  lease — is still a one-line override. The same goes for `transactions?`: set it
+  lease — is still a one-line override. The same goes for `write_transactions?`: set it
   to `false` and multi-step actions go back to being non-atomic, which is what
   they were before this existed.
 
@@ -33,7 +33,7 @@ defmodule AshCell.Resource.Transformers.BindTenant do
     {:ok,
      dsl
      |> default_option(:tenant_binder, AshCell.Binder)
-     |> default_option(:transactions?, true)
+     |> default_option(:write_transactions?, true)
      |> carry_tenant()}
   end
 

@@ -29,7 +29,7 @@ defmodule AshCell.Binder do
   write.
 
   Re-resolving does not cost atomicity, which was the obvious worry. `AshCell.Resource`
-  sets `transactions? true`, so Ash wraps a multi-step action in one transaction,
+  sets `write_transactions? true`, so Ash wraps a multi-step action in one transaction,
   and a transaction lives on one connection: while it is open, asking again for the
   same tenant returns the same cell repo pid and the statement lands inside the
   same `BEGIN`. A statement that would resolve to a *different* cell is refused

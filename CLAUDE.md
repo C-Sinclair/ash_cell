@@ -49,7 +49,7 @@ that is an ADR, not a paragraph buried in the design doc.
   demo's behaviour changes, that README is part of the change.
 - **Fork changes go upstream-shaped.** Changes needed in `ash_sqlite` are made in the sibling
   checkout as narrow commits matching that project's style, so each can become a PR. Both the
-  `tenant_binder` and `transactions?` options default to current upstream behaviour for exactly
+  `tenant_binder` and `write_transactions?` options default to current upstream behaviour for exactly
   this reason — see [ADR-03](docs/decisions/ADR-03-fork-ash-sqlite-narrowly.md).
 - **Markdown links are checked.** `link_verifier` runs in CI and on every edit via a hook. Local
   links must resolve; relative links resolve from the file's own directory.

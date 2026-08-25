@@ -1,4 +1,4 @@
-# ADR-04 — Enable transactions behind an opt-in `transactions?` flag, with `BEGIN IMMEDIATE`
+# ADR-04 — Enable transactions behind an opt-in `write_transactions?` flag, with `BEGIN IMMEDIATE`
 
 **Status:** accepted
 **Date:** 2026-08-21
@@ -8,7 +8,7 @@
 
 ## The decision
 
-Add a `transactions? true` option to the fork's `sqlite` DSL section, default `false` so upstream
+Add a `write_transactions? true` option to the fork's `sqlite` DSL section, default `false` so upstream
 behaviour is unchanged. When set, writes open with `BEGIN IMMEDIATE`, and
 `prefer_transaction_for_atomic_updates?` stays `false` so a single-statement atomic update is not
 wrapped or downgraded.
@@ -30,7 +30,7 @@ Tested, not just reasoned about. It broke 9 pre-existing `BinderTest` tests: eve
 a tenant-carrying change raised "repo module not started," because `Ash.DataLayer.transaction/5`
 fires *above* the data layer with no tenant in scope, before any per-statement bind happens.
 
-### Option B — opt-in `transactions?` flag with `BEGIN IMMEDIATE` (chosen)
+### Option B — opt-in `write_transactions?` flag with `BEGIN IMMEDIATE` (chosen)
 
 Cost: requires threading the tenant down to `transaction/4` through
 `changeset.context[:data_layer]` (three different shapes need handling — see Decision and why),
@@ -70,7 +70,7 @@ flagged as worth testing at depth ≥ 2 but not resolved here.
 ## Consequences
 
 - **What it rules out.** Relying on upstream's default transaction behaviour anywhere — a resource
-  must opt in with `transactions? true` to get transactional semantics at all.
+  must opt in with `write_transactions? true` to get transactional semantics at all.
 - **What it makes worse.** `AshCell.Resource.Changes.CarryTenant` now exists purely to smuggle the
   tenant past a layer of Ash that was not designed to carry it, and `reason_tenant/1` has to handle
   three different changeset shapes to do it.
@@ -79,7 +79,7 @@ flagged as worth testing at depth ≥ 2 but not resolved here.
   tenant is refused outright) and [ADR-06](ADR-06-own-repo-for-shared-tables.md) (shared tables get
   their own repo and their own transactions, not nested ones).
 - **What now depends on it.** Any resource wanting transactional writes must set
-  `transactions? true`; the drain path's `force: true` mid-transaction abort behaviour; the fork's
+  `write_transactions? true`; the drain path's `force: true` mid-transaction abort behaviour; the fork's
   `prefer_transaction_for_atomic_updates? → false` setting.
 
 ## Evidence

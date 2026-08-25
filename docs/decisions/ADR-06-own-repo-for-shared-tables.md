@@ -9,7 +9,7 @@
 
 Give any shared, non-tenanted table its own repo module (the `AshCell.TestGlobalRepo` pattern), and
 never reuse the cells' repo module for a resource that is not meant to be tenanted. Plain resources
-built this way need nothing AshCell-specific to get transactions — just `transactions? true` — since
+built this way need nothing AshCell-specific to get transactions — just `write_transactions? true` — since
 `AshCell.Resource` itself refuses any strategy other than `strategy :context`.
 
 ## Context
@@ -61,7 +61,7 @@ connection, and that is not what this option offers.
   the cell at write time; this is a related but separate constraint, not solved by this ADR.
 - **What now depends on it.** Every shared/global resource in the codebase must use a repo module
   distinct from the cells' repo module. `AshCell.Resource`'s restriction to `strategy :context`
-  depends on plain resources not needing anything AshCell-specific beyond `transactions? true`.
+  depends on plain resources not needing anything AshCell-specific beyond `write_transactions? true`.
 
 ## Evidence
 

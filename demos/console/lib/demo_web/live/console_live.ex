@@ -403,7 +403,7 @@ defmodule DemoWeb.ConsoleLive do
               <span>Resident cells</span><span>{length(@resident)}</span>
             </div>
             <div :for={cell <- @fleet} class="flex justify-between border-b border-slate-800/50 py-1">
-              <span class="font-mono text-xs">{cell.tenant}</span>
+              <span class="font-mono text-xs">{cell.cell_key}</span>
               <span class="text-slate-400 text-xs">
                 {bytes(cell.bytes)} · {cell.queries} queries · resident {div(cell.resident_ms, 1000)}s
               </span>

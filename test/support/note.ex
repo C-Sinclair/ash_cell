@@ -4,7 +4,7 @@ defmodule AshCell.Test.Note do
 
   Deliberately *not* using `AshCell.Resource` — that extension requires
   `strategy :context`, because a cell is one database per tenant and the tenant is
-  how it finds which one. This is the other shape: `transactions?` comes from the
+  how it finds which one. This is the other shape: `write_transactions?` comes from the
   `sqlite` section directly, and nothing binds anything.
   """
   use Ash.Resource,
@@ -14,7 +14,7 @@ defmodule AshCell.Test.Note do
   sqlite do
     table "notes"
     repo AshCell.TestGlobalRepo
-    transactions? true
+    write_transactions? true
   end
 
   attributes do

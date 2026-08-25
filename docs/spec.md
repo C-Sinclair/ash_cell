@@ -27,7 +27,7 @@ Three findings reshape the plan. Two make it smaller, one makes it more honest.
 3. **AshSqlite has no aggregates** (`can?(_, {:aggregate, _}) → false`). Verified in
    source. The rev 1 "zero resource changes" claim is false and is withdrawn.
    **Transactions, previously listed here, are now implemented** in the fork behind a
-   `transactions?` option and turned on by `AshCell.Resource`; the earlier
+   `write_transactions?` option and turned on by `AshCell.Resource`; the earlier
    `can?(_, :transact) → false` was a data layer default, not a SQLite limitation.
 
 ## 1. What AshCell is
@@ -231,7 +231,7 @@ This replaces rev 1's "zero changes" claim.
 | Lateral joins, `distinct`, locks | no |
 
 Transactions were the gap with teeth — an after-hook failure left the primary write
-committed — and they are now closed. The fork adds a `transactions?` option to the `sqlite`
+committed — and they are now closed. The fork adds a `write_transactions?` option to the `sqlite`
 section, off by default so upstream behaviour is unchanged, and `AshCell.Resource` turns it
 on. Writes open as `BEGIN IMMEDIATE`, because a deferred read-then-write has to upgrade its
 lock and SQLite fails an upgrade immediately rather than waiting out `busy_timeout`.

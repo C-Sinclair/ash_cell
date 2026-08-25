@@ -15,7 +15,7 @@ SQLite file rather than whichever file the calling process happens to have bound
 
 - `AshCell.Resource` resources need no caller ceremony at all — no `with_tenant/2` at call
   sites — across reads, aggregates, atomic updates, atomic destroys, and bulk writes.
-- Multi-step actions on a cell are transactional (`transactions? true`), and a transaction
+- Multi-step actions on a cell are transactional (`write_transactions? true`), and a transaction
   cannot silently span two cells.
 - A non-tenanted resource sharing the cells' repo module silently inherits whatever tenant
   happens to be bound; giving it its own repo module makes it immune by construction.
@@ -87,7 +87,7 @@ way to be immune to a cell binding, since Ecto keys the dynamic binding as
   ratio) and would not buy independence, since `ash_sqlite` itself rides `ash_sql`. A test
   rebase onto current upstream, including an upstream commit touching the forked area,
   succeeded 5/5 commits with zero conflicts.
-- **Transactions behind an opt-in `transactions?` flag**
+- **Transactions behind an opt-in `write_transactions?` flag**
   ([ADR-04](../decisions/ADR-04-transactions-behind-an-opt-in-flag.md)), default off so
   upstream behaviour is unchanged. Globally re-enabling transactions broke 9 pre-existing
   tests, because `Ash.DataLayer.transaction/5` fires above the data layer with no tenant in
@@ -133,7 +133,7 @@ way to be immune to a cell binding, since Ecto keys the dynamic binding as
 4. `:usage` (`:read | :write | :transaction`) added to the seam, because only the data layer
    knows which kind of statement is about to run — this is what later made the read cache in
    DD-04 possible.
-5. Transactions enabled behind `transactions?`, `CarryTenant` added to route the tenant into
+5. Transactions enabled behind `write_transactions?`, `CarryTenant` added to route the tenant into
    `transaction/4`.
 6. Cross-cell transaction refusal (`assert_same_cell!/1`) hardened to compare cell keys rather
    than tenants.

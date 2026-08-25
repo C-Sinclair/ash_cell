@@ -63,7 +63,7 @@ below is needed if Hex publication becomes urgent.
 trouble." The 16:1 ratio and the zero-conflict rebase are the numbers that decided it, not a
 preference for forks in general. The bridge option, if Hex publication is needed sooner than
 upstream review: publish the fork under its own name, version-pinned. The intended real fix is to
-upstream `tenant_binder` and `transactions?` as PRs — both already default to current upstream
+upstream `tenant_binder` and `write_transactions?` as PRs — both already default to current upstream
 behaviour, which makes them a narrow ask. Revisit vendoring only if upstream declines the PRs *and*
 the rebase starts conflicting; as of this ADR, neither has happened.
 
@@ -73,7 +73,7 @@ the rebase starts conflicting; as of this ADR, neither has happened.
   in the near term, since `mix hex.build` refuses a git dependency.
 - **What it makes worse.** The project stays exposed to upstream drift until the PRs land or are
   declined; every AshCell release depends on the fork rebasing cleanly.
-- **What stays open.** Whether upstream accepts `tenant_binder` and `transactions?` as PRs is
+- **What stays open.** Whether upstream accepts `tenant_binder` and `write_transactions?` as PRs is
   unresolved — this ADR records the plan, not the outcome.
 - **What now depends on it.** The convention that fork changes go in `ash_sqlite/`, as narrow
   commits matching the project's existing style, set here, is assumed by
@@ -93,7 +93,7 @@ the rebase starts conflicting; as of this ADR, neither has happened.
 - Housekeeping finding: the fork's local `main` was 2 commits ahead of `origin/main` (`8fb72b3`,
   `91e4753`), meaning anyone cloning `ash_cell` standalone would silently get a fork missing the
   statement-usage argument.
-- Not verified: whether upstream will accept the `tenant_binder` or `transactions?` PRs — no PR has
+- Not verified: whether upstream will accept the `tenant_binder` or `write_transactions?` PRs — no PR has
   been filed at the time of this record.
 
 ## Notes

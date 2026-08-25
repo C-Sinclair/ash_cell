@@ -29,14 +29,14 @@ defmodule AshCell.Resource do
     * sets `tenant_binder AshCell.Binder`, which is how the data layer learns which
       connection a tenanted statement runs on — once per statement, in the process
       about to issue it
-    * sets `transactions? true`, so Ash wraps multi-step actions in a transaction
+    * sets `write_transactions? true`, so Ash wraps multi-step actions in a transaction
       instead of leaving a failed one half-applied
     * adds `AshCell.Resource.Changes.CarryTenant`, because the one callback that
       opens the transaction runs above the data layer and so cannot read the tenant
       off a changeset the way every other callback does
 
-  Setting `tenant_binder` or `transactions?` yourself wins — the transformer only
-  fills in defaults. `transactions? false` gets you the old behaviour, where a
+  Setting `tenant_binder` or `write_transactions?` yourself wins — the transformer only
+  fills in defaults. `write_transactions? false` gets you the old behaviour, where a
   multi-step action was never atomic.
 
   A transaction cannot span two cells: they are separate files on separate
@@ -87,7 +87,7 @@ defmodule AshCell.Resource do
 
   A shared table is a plain `AshSqlite.DataLayer` resource, not this extension:
   `strategy :context` is required here, because the tenant is how a cell is found.
-  Transactions still work — `transactions? true` in the `sqlite` section is enough
+  Transactions still work — `write_transactions? true` in the `sqlite` section is enough
   on its own, with nothing to bind.
 
   **Give it its own repo module.** Ecto keys the dynamic binding as
