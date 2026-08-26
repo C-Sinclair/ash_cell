@@ -28,6 +28,7 @@ that, and the number came back and reversed the design.
 | [DD-10](DD-10-tenant-local-graph.md) | Edges, traversal, and tenant-local ReBAC | draft |
 | [DD-11](DD-11-collections.md) | CAS, bounded cache, queue, content-addressed tree | draft |
 | [DD-12](DD-12-search-and-vector-indexes.md) | FTS5 and `sqlite-vec` inside the cell | draft |
+| [DD-13](DD-13-durable-streams.md) | Offset-keyed segments in the object store, and resume across the writer's death | building |
 
 DD-01 to DD-04 were written *after* the code, to record what exists. Anything new should get its
 design doc first.
@@ -41,6 +42,8 @@ sense:
   the server cannot read
 - [`demos/rollout/docs/design.md`](../../demos/rollout/docs/design.md) — one cell per release
   channel
+- [`demos/relay/docs/design.md`](../../demos/relay/docs/design.md) — one cell per stream, and an
+  offset that outlives the process that issued it
 
 ## Related
 

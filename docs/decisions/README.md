@@ -40,6 +40,7 @@ live in [`../design/`](../design), and reference these.
 | [21](ADR-21-close-does-not-await-the-connection.md) | Close does not wait for the connection; the rewrite path asks it to | accepted |
 | [22](ADR-22-where-the-tenancy-runtime-lives.md) | Keep AshCell's own tenant binder as the fork grows its own engine; the seam is the cell-key split | **proposed — seam open** |
 | [23](ADR-23-merge-by-fast-forward-or-refuse.md) | Merge a branch only when its origin has not moved; refuse divergence rather than reconcile it, and measure divergence by content digest | accepted |
+| [24](ADR-24-a-segment-set-is-not-a-disjoint-cover.md) | A stream reader de-duplicates by offset and does not trust the store's listing to be duplicate-free | corrects an earlier belief |
 
 ## Performance, encryption, integration
 
@@ -72,6 +73,9 @@ false. Do not reintroduce the superseded position:
   cheap win. Measured, it is flat on point reads and 1.9× *worse* on a realistic join.
 - **[ADR-16](ADR-16-isolation-is-blast-radius.md)** — the compliance pitch was overstated. HIPAA
   does not require physical isolation.
+- **[ADR-24](ADR-24-a-segment-set-is-not-a-disjoint-cover.md)** — a stream's segments were assumed
+  to be a disjoint cover, so a read concatenated the tiers and nothing else. The store's listing
+  returned one key twice under a concurrent write, and a resume came back with a duplicated offset.
 - **[ADR-23](ADR-23-merge-by-fast-forward-or-refuse.md)** — SQLite's file change counter was used
   as the fast-forward test because it is documented to move on every write transaction. In WAL
   mode it does not, so merge saw no divergence in a rewritten database and discarded the origin's
