@@ -1,158 +1,296 @@
 # DD-06 — The append log and compaction
 
 **Status:** draft
-**Date:** 2026-08-24
-**Decisions:** [ADR-04](../decisions/ADR-04-transactions-behind-an-opt-in-flag.md), [ADR-05](../decisions/ADR-05-refuse-cross-cell-transactions.md), [ADR-13](../decisions/ADR-13-pool-size-one-and-cache.md), [ADR-20](../decisions/ADR-20-choose-a-durability-level.md)
-**Lands in:** `lib/ash_cell/log.ex` (new), `lib/ash_cell/resource/log.ex` (new), and the extraction of the hand-rolled logs in `demos/collab_editor`, `demos/vcs`, and `vellum`
+**Date:** 2026-08-26
+**Decisions:** [ADR-04](../decisions/ADR-04-transactions-behind-an-opt-in-flag.md), [ADR-05](../decisions/ADR-05-refuse-cross-cell-transactions.md), [ADR-13](../decisions/ADR-13-pool-size-one-and-cache.md), [ADR-19](../decisions/ADR-19-the-cell-cut-is-a-choice.md), [ADR-20](../decisions/ADR-20-choose-a-durability-level.md)
+**Lands in:** `lib/ash_cell/log.ex` (new), `lib/ash_cell/resource/log.ex` (new), the extraction of the hand-rolled logs in `demos/collab_editor` and `vellum`, and the new `demos/ledger`
 
 ## What this is
 
-One data structure, parameterised by a fold: an ordered append-only log inside a cell, with
-`append/3`, `read_since/3`, and `compact/2` where compaction folds a run of entries into a
-snapshot row, writes it, and truncates the folded entries — all in one `BEGIN IMMEDIATE`
-transaction.
+One data structure, parameterised by a fold: an ordered append-only log inside a cell, with a
+**checkpoint** row holding the folded state and a **tail** of entries appended since. Reading is
+`checkpoint ⊕ tail`. Compaction folds the tail into the checkpoint — in one `BEGIN IMMEDIATE`
+transaction — and optionally truncates what it folded.
 
-It is an extraction, not an invention. `collab_editor` folds Yjs updates, `vellum` folds those
-plus an authorship ledger, `vcs` folds a commit DAG. All three are the same three operations with
-different fold functions, and each has re-derived the truncation-safety argument separately.
+It is an extraction, not an invention. `collab_editor` folds Yjs updates, `vellum` folds those plus
+an authorship ledger, `vcs` folds a commit DAG. All three are the same operations with different
+folds, and each re-derived the truncation-safety argument separately.
+
+The shape below was written *from* those implementations rather than from the idea of a log, which
+corrected five things an earlier draft of this document had wrong. They are called out in
+**Corrections** so the next reader does not reintroduce them.
 
 ## What this proves
 
-- Compaction is atomic: a reader concurrent with a compaction sees either the pre-fold entries or
-  the post-fold snapshot, never a snapshot with its source entries already gone, and never both.
-- The safety argument belongs to the **cell**, not to the payload. The same code, with a Yjs
-  merge as the fold, gives a CRDT document; with a state-machine reducer, an event-sourced
-  aggregate; with an append of authorship tuples, `vellum`'s ledger. Any fold, one proof.
-- A compaction interrupted at any point — process kill, cell taken mid-transaction, node loss —
-  leaves the log readable and the folded state correct. The taken-mid-transaction case is already
-  established behaviour ([ADR-04](../decisions/ADR-04-transactions-behind-an-opt-in-flag.md)); this
-  extends it to a specific structure.
-- Reconstructing state from `snapshot ⊕ tail` equals reconstructing it from the full untruncated
-  log, for every fold the library ships, checked by property test.
-- Log growth is bounded by the compaction policy rather than by history: a document edited for a
-  year holds a snapshot plus a tail, not a year of updates.
+- Compaction is atomic: a reader concurrent with a compaction sees either the pre-fold tail or the
+  post-fold checkpoint, never a checkpoint with its source entries already gone, and never both.
+- The safety argument belongs to the **cell**, not the payload. Same code, different folds: a Yjs
+  merge gives a CRDT document; a state-machine reducer gives an event-sourced aggregate; an
+  append of authorship tuples gives `vellum`'s ledger. Any fold, one proof.
+- **`checkpoint ⊕ tail == fold(all entries)` at every compaction threshold**, checked by property
+  test over generated histories. This is the invariant everything else rests on.
+- A compaction interrupted anywhere — process kill, cell taken mid-transaction, node loss — leaves
+  the log readable and the folded state correct
+  ([ADR-04](../decisions/ADR-04-transactions-behind-an-opt-in-flag.md) established this for
+  transactions generally; this shows it for a specific structure).
+- **The compaction threshold is a dial between write cost and read-model freshness, not two
+  architectures.** At `entries: 1` the tail is always empty, so a checkpoint column is exact and
+  cross-aggregate queries need no overlay — which is identical to "update the projection in the
+  append transaction". At `entries: 500` writes are cheap and those queries are stale by up to the
+  tail. One mechanism, one number.
+- Log growth is bounded by the compaction policy rather than by history *when truncation is on*;
+  when it is off, **read** cost is still flat in history, because a read only touches
+  `seq > through_seq`.
+- CQRS and event sourcing need nothing here beyond `expected_version` and idempotent commands: a
+  scoped log is an event store, the checkpoint is the aggregate snapshot and the read model, and
+  the demo that shows it is [`demos/ledger`](../../demos/ledger/docs/design.md).
 
 ## Why it needs a cell
 
-This is the load-bearing sentence in the workspace's own CLAUDE.md, generalised: *a CRDT converges
-under concurrent appends, but compaction is a read-modify-write, and a CRDT does not make a
-read-modify-write safe — the cell's single writer does.* Two processes compacting the same log
-concurrently against a shared table both read the same entries, both write a snapshot, and one
-truncation removes entries the other's snapshot did not include. Advisory locks or a
-compare-and-swap generation can paper over it; a cell removes the concurrency instead.
+The load-bearing sentence, generalised: *a CRDT converges under concurrent appends, but compaction
+is a read-modify-write, and a CRDT does not make a read-modify-write safe — the cell's single
+writer does.* Two processes compacting one log against a shared table both read the same entries,
+both write a checkpoint, and one truncation removes entries the other's checkpoint did not include.
+Advisory locks or a compare-and-swap generation paper over it; a cell removes the concurrency.
 
-The second reason is transactional: the snapshot write and the truncation must commit together,
-and they are in one file, so they can ([ADR-05](../decisions/ADR-05-refuse-cross-cell-transactions.md)
-is not in the way because a log never spans cells).
+The second reason is transactional: the checkpoint write, the truncation, and any guard that must
+hold before history is destroyed have to commit together, and they are in one file, so they can.
 
 ## Non-goals
 
 - **Not a distributed log.** No partitions, no consumer groups, no cross-cell ordering. A log is
   cell-local and its order is the cell's write order.
-- **Not a replacement for the replication path.** This is an application-level structure inside
-  the SQLite file; snapshots here are rows, not the object-store snapshots of
-  [DD-02](DD-02-replication-and-ownership.md). The two words collide and the code must not.
-- **Not a fold library.** The fold is the application's function. The library ships perhaps two
-  reference folds (last-write-wins, and a byte-concatenating one for CRDT updates) as examples,
-  not as a catalogue.
-- **Not exactly-once consumption.** Reading is by cursor and a consumer that crashes re-reads.
-  Effects on top of that are [DD-08](DD-08-durable-execution.md).
-- **Not automatic compaction tuning.** Policy is declared (entry count, byte size, age, or
-  manual) and the application picks; the library will not guess.
-- **Not multi-log transactions across cells,** which is the same refusal as everywhere.
+- **Not a replacement for the replication path.** Checkpoints here are rows, not the object-store
+  snapshots of [DD-02](DD-02-replication-and-ownership.md). The two words collide and the code must
+  not — this document says *checkpoint* for the row and *snapshot* only for the object.
+- **Not a fold library.** The fold is the application's. Ship perhaps two reference folds as
+  examples, not a catalogue.
+- **Not exactly-once consumption.** Reading is by cursor and a crashed consumer re-reads. Effects
+  on top of that are [DD-08](DD-08-durable-execution.md).
+- **Not automatic compaction tuning.** Policy is declared and the application picks; the library
+  will not guess.
+- **Not a projection subsystem.** There is no separate read model, no projection daemon, no
+  checkpoint table for consumers. The checkpoint row *is* the read model — see *Data model*.
+- **Not multi-log transactions across cells**, the same refusal as everywhere.
+
+## Corrections to the earlier draft
+
+Each of these was wrong in the first version of this document and is right in both shipped
+implementations. They are listed because they are the parts most likely to be re-derived wrongly.
+
+1. **`seq` is not `MAX(seq) + 1`.** After a truncation `MAX(seq)` is NULL, so allocation would
+   restart at 1, collide with already-checkpointed sequence numbers, and silently corrupt every
+   resume. It is `max(MAX(seq), through_seq) + 1`. Both demos implement this as a `head_seq/1`
+   that falls back to the checkpoint.
+2. **The fold is seeded by the prior checkpoint**, not a pure reduction over entries. `merged_state`
+   applies the checkpoint into a fresh `Yex.Doc` *then* the tail, so the contract is
+   `seed(prior) → apply(entry) → dump`, against a mutable accumulator.
+3. **One checkpoint row, upserted** — `collab_editor` keys it `"current"`, a scoped log keys it by
+   scope. The earlier `retain_snapshots N` option was invented and is dropped; retaining N is a
+   different key design that nothing needs.
+4. **Compaction needs a guard that can veto it.** `vellum` calls `assert_attributed!/2` before the
+   checkpoint write and raises to abort — and that raise, inside the transaction, is what makes
+   "the ledger write and the truncation are one transaction" true. Without it `vellum`'s central
+   claim is unenforced.
+5. **Reading has three outcomes, not two.** A cursor below `through_seq` cannot be served
+   incrementally; both demos return `:compacted_past` and the caller asks for the state instead.
+
+Two smaller ones: the head is a `sort: [seq: :desc], limit: 1` read rather than `max(seq)`, because
+AshSqlite has no aggregates; and both demos read the *entire* tail into memory during compaction,
+which is fine at their thresholds and is a stated risk below.
 
 ## Data model
 
-Two resources per log, generated by the `AshCell.Resource.Log` extension so a demo declares a log
-rather than hand-writing both:
+Two tables per log, generated by the extension.
 
-- **`<name>_entries`**: `seq` (integer, monotonic within the cell, the primary key), `payload`
-  (blob), `meta` (map), `inserted_at`. Indexed on `seq` only — a log is read by range.
-- **`<name>_snapshots`**: `through_seq` (the highest entry folded in, unique), `state` (blob),
-  `fold_version` (integer), `inserted_at`. Keeping more than one snapshot row is the policy's
-  choice; keeping the *newest* is mandatory.
+**Entries** — `scope` (see below), `seq`, `payload`, plus any `entry_attributes` the application
+declares. Primary key `(scope, seq)`. The extra attributes are ordinary columns, not keys:
+`collab_editor` carries `client_id` and `at`, `vellum` an author reference. Without them that
+metadata would have to be buried in the payload where it cannot be queried.
 
-`seq` is allocated inside the appending transaction from `MAX(seq) + 1`, not from a global
-counter, because there is one writer and the read is free. `fold_version` exists so a changed fold
-function invalidates old snapshots rather than silently mixing two reducers' outputs — a
-recompaction from a retained full log if one exists, and a hard error if it does not.
+**Checkpoint** — `scope` (primary key), `through_seq`, `updated_at`, and *either* a `state` blob
+*or* application-declared typed columns. This is the important choice:
 
-Large payloads (a Yjs update is small; a `vcs` blob is not) tier to the object store by content
-hash, with the entry row holding the hash. That crosses a boundary that cannot be transactional,
-so it follows the intent-then-commit ordering of [DD-08](DD-08-durable-execution.md) and is
-explicitly out of scope for stage 1.
+- A blob is right when the folded state is not columns — a Yjs document.
+- **Typed columns make the checkpoint the read model.** A ledger account's checkpoint holds
+  `balance` and `status`, so "every overdrawn account" is an ordinary indexed query instead of a
+  fold over every scope. This is why no separate projection table exists.
+
+The checkpoint is never authoritative alone. It is a memo of the fold up to `through_seq`, and the
+tail is the correction — so any query reading a checkpoint column without overlaying the tail is
+reading a value stale by up to the compaction threshold. At `entries: 1` there is no tail and the
+distinction disappears. **This is the single most misusable thing in the design** and belongs in the
+generated function docs, not only here.
+
+### Scope: one log per cell, or one per row
+
+`scope` unifies two cases that look like different structures:
+
+```
+scoped (scope :account_id)          unscoped (no scope)
+entries  PK (scope, seq)            entries  PK (seq)          — scope is a constant
+checkpoint PK (scope)               checkpoint PK ("current")
+```
+
+Both are needed by things already on the table: `collab_editor` and `vellum` are unscoped (the cell
+*is* the document); [`demos/ledger`](../../demos/ledger/docs/design.md) and
+[DD-08](DD-08-durable-execution.md)'s per-instance workflow history are scoped. Correctness does not
+fork — one cell, one connection, one writer either way. Four things do:
+
+1. **Compaction becomes N compactions.** A cell with 10 000 scopes past threshold is a compaction
+   storm holding the cell's only connection. Bounded: at most `compact_batch` scopes per pass
+   (default 8), oldest-threshold-first, the remainder deferred. This is the one place the
+   flexibility genuinely costs, and the bound is not optional.
+2. **The generated API differs in arity** — `state(scope)` vs `state()`, `compact(scope)` vs
+   `compact()`.
+3. **Every query carries a scope predicate**, so the unscoped case pays a constant-value index
+   lookup it does not need. Probably noise; measured rather than assumed.
+4. **`seq` changes meaning.** Unscoped it is a cell-wide total order a client can resume from;
+   scoped it orders only within a scope, so a cursor is `{scope, seq}` and `:compacted_past` is
+   per scope.
+
+`scope` names an attribute of the resource the log is declared on, which is what makes declaring it
+on a resource obviously right. An unscoped log declared on a resource is mildly impure — it belongs
+to the cell, and the resource is just where it was written down — but that is a smaller wart than a
+second DSL location.
+
+### Truncation
+
+`truncate?` defaults to `true`. `collab_editor` deletes what it folded, because bounded storage is
+the point. **A ledger must not**: in an event-sourced system the entries *are* the record, and
+deleting them destroys the thing the system exists for. With `truncate?: false` the checkpoint
+advances and nothing is deleted — storage grows with history, read cost does not, and
+replay-from-zero stays local rather than depending on object-store snapshots
+([ADR-12](../decisions/ADR-12-whole-file-snapshots-on-a-schedule.md)), where a lifecycle rule could
+silently delete an audit record.
+
+### Consuming it
+
+```elixir
+cell_log do
+  log :entries do
+    scope :account_id                  # omit for a cell-wide log
+    fold Ledger.Folds.Balance          # seed/1, apply/2, dump/1
+    truncate? false                    # events are the record
+    compact_when entries: 1            # the freshness dial
+    compact_batch 8                    # bound on scoped compaction per pass
+    before_checkpoint Ledger.Guards.Balances   # may raise to abort
+    idempotent_by :command_id          # dedup table, written in the same transaction
+
+    checkpoint_attributes do           # typed read model, instead of a state blob
+      attribute :balance, :integer
+      attribute :status, :atom
+    end
+
+    entry_attributes do
+      attribute :posting_id, :string
+      attribute :at, :utc_datetime
+    end
+  end
+end
+```
+
+Generating the two resources and: `append/3` taking `expected_version:` and returning
+`{:ok, seq} | {:error, :version_conflict, actual: n}`, `read_since/2` returning
+`{:ok, entries} | :compacted_past`, `state/1`, and `compact/1` returning the stats map both demos
+already produce.
+
+**`expected_version` is the one genuinely missing primitive**, and it is worth being precise about
+why a single writer does not remove the need for it. The cell removes the *race* — no two appends
+interleave. It cannot remove the *stale decision*: a handler that read the aggregate at version 7,
+decided, and had version 8 land before it appended. That check is a comparison inside the
+transaction, but it is load-bearing and neither demo has it, because neither has concurrent
+deciders.
+
+There is deliberately **no `after_append` hook**. An earlier sketch had one for updating a
+projection; typed checkpoint attributes make it unnecessary, because there is no second table to
+update.
 
 ## Trade-offs
 
-- **Snapshot-in-row vs snapshot-in-object-store.** A row keeps compaction atomic; an object makes
-  the file small. Chosen: a row, because atomicity is the entire point and a cell holding a
-  100 MB snapshot row is a signal the cell is cut wrong ([ADR-19](../decisions/ADR-19-the-cell-cut-is-a-choice.md)).
-- **Truncate vs tombstone.** Tombstoning keeps history for [DD-05](DD-05-time-travel-and-forks.md)
-  and grows forever. Chosen: truncate, because the object-store snapshot history already provides
-  time travel, and duplicating it inside the file pays for it twice.
-- **Compaction in the writer's transaction vs a background pass.** Inline makes a write
-  occasionally slow; background needs its own binding and a way to not race the writer — which,
-  since the cell *is* the writer, means asking the cell to do it anyway. Chosen: the cell schedules
-  it against itself, so it is background in latency terms and inline in concurrency terms. The tail
-  latency this creates is a measurement below.
-- **Retain N snapshots vs one.** Retaining lets a bad fold be rolled back; costs bytes. Chosen:
-  configurable, default 1, because the default should be the cheap one.
+- **Checkpoint in a row vs in the object store.** A row keeps compaction atomic; an object keeps the
+  file small. Chosen: a row — atomicity is the point, and a cell holding a 100 MB checkpoint is a
+  signal the cell is cut wrong ([ADR-19](../decisions/ADR-19-the-cell-cut-is-a-choice.md)).
+- **Typed checkpoint columns vs a blob.** Columns make the checkpoint queryable and couple the
+  schema to the fold, so changing what the state contains is a fleet-wide migration. Chosen: both,
+  declared per log, because `collab_editor` cannot use columns and `ledger` cannot use a blob.
+- **Compaction inline vs background.** Inline makes a write occasionally slow; background needs its
+  own binding and a way not to race the writer — which, since the cell *is* the writer, means asking
+  the cell anyway. Chosen: the cell schedules it against itself, so it is background in latency
+  terms and inline in concurrency terms.
+- **Bounded vs unbounded scoped compaction.** Unbounded is simpler and can stall a cell's only
+  connection for an unbounded time. Chosen: bounded, because an unbounded compaction looks fine at
+  demo scale and stalls a real tenant.
 
 ## Measurements this must produce
 
 Warm cell, `pool_size: 1` ([ADR-13](../decisions/ADR-13-pool-size-one-and-cache.md)), median of 5:
 
-- **Append throughput** at payload sizes 256 B / 4 KB / 64 KB, appends/sec single-writer.
-- **Compaction cost vs entries folded** at 100 / 1 000 / 10 000 entries, and the **p99 append
-  latency during a compaction** — this is the number that decides whether inline scheduling is
-  acceptable, and it is a **cliff**: state the entry count at which p99 append crosses 50 ms.
-- **Read cost of `snapshot ⊕ tail` vs full-log replay** at tail lengths 0 / 100 / 1 000, to show
-  compaction is worth doing at all.
-- **File size before and after compaction** including whether `VACUUM` is needed to actually
-  reclaim, since SQLite's freelist means truncation may not shrink the file — and if it is needed,
-  its cost is part of compaction's cost.
-- **The `collab_editor` and `vellum` suites before and after extraction**, to establish the
-  extraction changed no behaviour.
+- **Append throughput** at payload sizes 256 B / 4 KB / 64 KB.
+- **Compaction cost vs entries folded** at 100 / 1 000 / 10 000, and **p99 append latency during a
+  compaction** — the number that decides whether inline scheduling is acceptable. A **cliff**: the
+  entry count at which p99 append crosses 50 ms.
+- **The dial, both ends**: append throughput and cross-scope query exactness at `entries: 1` versus
+  `entries: 500`. The ratio is the price of an exact read model.
+- **Scoped compaction under load**: p99 append latency in a cell with 10 000 scopes past threshold,
+  with `compact_batch` at 1 / 8 / 64, to show the bound does what it claims.
+- **Read cost vs history with `truncate?: false`** at 10³ / 10⁶ / 10⁷ entries with `through_seq`
+  current — flat is the claim; a cliff would falsify it.
+- **Scope predicate overhead**: unscoped log versus a scoped log with one scope.
+- **File size before and after compaction**, including whether `VACUUM` is needed to reclaim, since
+  SQLite's freelist means truncation may not shrink the file — and if it is, that cost is part of
+  compaction's.
+- **`collab_editor` and `vellum` suites before and after extraction**, to establish it changed no
+  behaviour.
 
 ## Staging
 
-1. **`AshCell.Log` as plain functions** over two tables, one fold, no extension. Checkable:
-   append/read/compact round-trip, and the atomicity property test (concurrent reader during
-   compaction, 1 000 iterations).
-2. **Crash matrix.** Kill the cell at each point in a compaction; assert the fold-equivalence
-   property afterwards. Includes the `force: true` drain path.
-3. **`AshCell.Resource.Log` extension** so a resource declares `log :updates, fold: Mod`.
-   Checkable: a demo declares a log in ~5 lines and gets both tables and both actions.
-4. **Extract `collab_editor`** onto it, deleting its hand-rolled version. Checkable: its existing
-   Elixir suite and `test/browser/convergence.mjs` both still pass unchanged.
-5. **Extract `vellum`'s ledger.** Checkable: the ledger write and the truncation are visibly one
-   transaction, which is `vellum`'s central claim.
-6. **`fold_version` and recompaction**, plus measurements.
+1. **`AshCell.Log` as plain functions**, unscoped, one fold, no extension. Checkable: the
+   `checkpoint ⊕ tail` property test (1 000 generated histories), and a concurrent reader during
+   compaction.
+2. **Crash matrix.** Kill the cell at each point in a compaction; assert the property afterwards.
+   Includes the drain path's `force: true` case.
+3. **`scope`, and `compact_batch`.** Checkable: two scopes compact independently; the batch bound
+   holds under 10 000 over-threshold scopes.
+4. **`truncate?: false`, `expected_version`, `idempotent_by`.** Checkable: a stale version is
+   refused; a replayed command posts once across an eviction.
+5. **The `AshCell.Resource.Log` extension** and typed checkpoint attributes. Checkable: a demo
+   declares a log in ~10 lines and gets both tables, both actions, and a migration.
+6. **Extract `collab_editor`.** Checkable: its Elixir suite and `test/browser/convergence.mjs` pass
+   unchanged.
+7. **Extract `vellum`'s ledger** via `before_checkpoint`. Checkable: the guard and the truncation
+   are visibly one transaction.
+8. **`fold_version` and recompaction**, then measurements.
 
 ## Where it stops
 
-- Ordering is per cell. Two cells' logs have no relative order and this structure will not invent
-  one.
-- The fold must be pure and deterministic, and **nothing checks that.** A fold that calls out to a
-  network makes recompaction non-reproducible and the library cannot tell.
-- Payload tiering to the object store is designed for and not built; until it is, a log entry is
-  as large as a SQLite blob should be.
-- No compaction of a log inside a *read-only* cell ([DD-05](DD-05-time-travel-and-forks.md)) —
-  obviously, but a caller might try.
-- The durability of an `append` is the cell's durability, which is
+- Ordering is per cell, or per scope within it. Nothing orders across cells.
+- **The fold must be pure and deterministic, and nothing checks that.** A fold that calls a network
+  makes recompaction non-reproducible and the library cannot tell.
+- Payload tiering to the object store is [DD-11](DD-11-collections.md)'s, not built here; until it
+  is, an entry is as large as a SQLite blob should be.
+- **A checkpoint column read without the tail is stale**, bounded by the threshold. Nothing in the
+  type system prevents it.
+- With `truncate?: false` the file grows without bound. Cutting the cell per time window
+  ([ADR-19](../decisions/ADR-19-the-cell-cut-is-a-choice.md)) is the answer and is not taken here.
+- `fold_version` after truncation is a trap: change the fold once the entries are gone and the old
+  checkpoint cannot be recomputed. It errors loudly; whether that is enough is unresolved.
+- Durability of an append is the cell's, which is
   [ADR-20](../decisions/ADR-20-choose-a-durability-level.md)'s open question. A returned append is
-  not necessarily fsynced.
-- Merge of two forks' logs is *enabled* by this (both sides are folds over entries) and not
-  implemented here.
+  not necessarily fsynced — most consequential for [`demos/ledger`](../../demos/ledger/docs/design.md).
+- No compaction inside a read-only cell, obviously, but a caller might try.
 
 ## Open risks
 
-- **`fold_version` after truncation is a trap.** Changing the fold once the source entries are
-  gone means the old snapshot cannot be recomputed. The design errors loudly; whether that is
-  enough in practice is unresolved, and the alternative (never truncate) contradicts the point.
-- **Inline compaction and the read cache** interact: a compaction bumps the epoch and invalidates
-  projections built from the log, which under `persistent_term` is the expensive direction
-  ([ADR-13](../decisions/ADR-13-pool-size-one-and-cache.md)). Should be measured with the ETS
-  store, not the shipped one.
-- Whether one `seq` allocation from `MAX(seq) + 1` holds up under the bulk-write path, which does
-  not go row by row.
+- **Whether `entries: 1` is fast enough to be the default.** If it is, the freshness dial is a much
+  less interesting finding than this document assumes, and the doc should be cut back to say so.
+  The stage-1 measurement decides.
+- **Inline compaction and the read cache** interact: a compaction invalidates projections built from
+  the log, which under `persistent_term` is the expensive direction
+  ([ADR-13](../decisions/ADR-13-pool-size-one-and-cache.md)). Measure against the ETS store.
+- **Reading the whole tail into memory** during compaction, which both demos do. Fine at 500
+  entries; a scoped log with a large batch is a different shape.
+- Whether one `seq` allocation from a head read holds up under the bulk-write path, which does not
+  go row by row.
+- **This work is gated on [ADR-22](../decisions/ADR-22-where-the-tenancy-runtime-lives.md)**: a log's
+  tables are created by whichever layer migrates a cell, and that seam is not drawn.
