@@ -1,6 +1,7 @@
 # ADR-04 — Enable transactions behind an opt-in `write_transactions?` flag, with `BEGIN IMMEDIATE`
 
 **Status:** accepted
+**Last changed:** 2026-08-27 — the flag's schema default was silently defeating `AshCell.Resource`; see *How the default was carried* and its evidence.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
 **Relates to:** [`docs/spec.md`](../spec.md) · `ash_sqlite/lib/data_layer.ex` ·
@@ -67,6 +68,34 @@ A nested-savepoint caveat was found and left unresolved: `exqlite/lib/exqlite/co
 uses a single fixed savepoint name (`exqlite_savepoint`) rather than one appended per nesting level,
 flagged as worth testing at depth ≥ 2 but not resolved here.
 
+## How the default is carried, and how it silently was not
+
+`AshCell.Resource` turns the flag on for the resources it is applied to, via
+`AshCell.Resource.Transformers.BindTenant`, which sets `write_transactions?` only if the resource
+has not set it — so an explicit `write_transactions? false` still wins.
+
+**That mechanism broke, and it broke quietly.** The option was declared in the fork's schema with
+`default: false`. Spark materialises a schema default into the section's `opts`, so
+`Transformer.get_option(dsl, [:sqlite], :write_transactions?)` returned `false` rather than `nil`,
+the transformer read that as "the user set it", and left it alone. Every `AshCell.Resource`
+resource ran with transactions **off** while this ADR, `AshCell.Resource`'s own docs, and the
+workspace notes all said they were on. Nothing raised: writes simply stopped being atomic, and a
+failed multi-step action left its earlier steps behind.
+
+`tenant_binder` was unaffected for one reason only — it has no schema default, so `get_option`
+returned `nil` and the transformer set it. The two options sat two lines apart in the same
+transformer with opposite outcomes.
+
+The fix is in the fork and is narrow: **drop `default: false` from the `write_transactions?`
+schema entry.** It was redundant — `AshSqlite.DataLayer.Info.write_transactions?/1` already passes
+`false` as its own default (`lib/data_layer/info.ex:23`), so a resource that sets nothing still
+reads `false` and upstream behaviour is bit-for-bit unchanged. Removing it is what restores the
+distinction between *unset* and *set to false* that the transformer depends on.
+
+The general trap, worth remembering beyond this option: **at transformer time a Spark schema
+default is indistinguishable from an explicitly written value.** Any transformer that means "set
+this unless the user did" can only work on an option with no schema default.
+
 ## Consequences
 
 - **What it rules out.** Relying on upstream's default transaction behaviour anywhere — a resource
@@ -83,6 +112,22 @@ flagged as worth testing at depth ≥ 2 but not resolved here.
   `prefer_transaction_for_atomic_updates? → false` setting.
 
 ## Evidence
+
+- **The silent regression, and the probe that found it.**
+  `AshSqlite.DataLayer.Info.write_transactions?(AshCell.Test.BoundPatient)` returned `false`, and
+  `Ash.DataLayer.data_layer_can?(BoundPatient, :transact)` returned `false`, on a resource using
+  `AshCell.Resource`. Reading the raw option confirmed the cause rather than the symptom:
+  `Spark.Dsl.Extension.get_opt(BoundPatient, [:sqlite], :write_transactions?, :UNSET, true)`
+  returned `false`, not `:UNSET`, so the schema default was present in `opts`. `tenant_binder` on
+  the same resource read `AshCell.Binder`, which is what narrowed it to "options with a schema
+  default" rather than "the transformer did not run".
+- **After dropping the schema default**, the same probe over four resources: a plain resource
+  `false`, a `strategy :context` resource with nothing set `false`, a resource setting
+  `write_transactions? true` explicitly `true`, and an `AshCell.Resource` resource `true`. The
+  first two are the upstream-unchanged check; the third is the override still winning.
+- **Suites after the change:** `ash_cell` 283 tests, 0 failures; `ash_sqlite` 289 tests, 0
+  failures. Before it, `ash_cell` had 5 failures in `AshCell.TransactionTest` — four of them
+  "a failing action leaves nothing behind", which is precisely the symptom of no transaction.
 
 - Spike branch `spike/sqlite-transactions` on both repos, 11 probes passing.
 - Feature branch suites: `ash_cell` 147/0; `ash_sqlite` 160/0 (154 existing + 6 new, upstream path

@@ -130,7 +130,15 @@ defmodule AshCell.TransactionTest do
           end)
         )
 
-      assert Exception.message(error) =~ "different tenant's database"
+      message = Exception.message(error)
+
+      # Asserted on the substance rather than the prose: the tenant that was
+      # refused, and the reason a caller has to act on. An earlier version pinned
+      # the exact wording and went red when the fork rephrased the message, which
+      # is a test failing for something that is not a behaviour.
+      assert message =~ "globex"
+      assert message =~ ~r/tenant's database/
+      assert message =~ "cannot commit across files atomically"
     end
 
     test "opening a transaction on another tenant inside one is refused" do
