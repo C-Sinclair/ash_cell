@@ -21,6 +21,19 @@ defmodule AshCell.TestMigrations do
   end)
 end
 
+defmodule AshCell.StreamMigrations do
+  @moduledoc """
+  Cells with only the durable-stream tables, for `AshCell.StreamTest`.
+
+  Separate from `AshCell.TestMigrations` rather than appended to it: that set's
+  version number is asserted by `test/migration_test.exs`, so adding a step there
+  breaks three tests that have nothing to do with streams.
+  """
+  use AshCell.Migrator
+
+  migration(1, &AshCell.Stream.migrate/1)
+end
+
 defmodule AshCell.FailingMigrations do
   @moduledoc "Migrations whose last step fails, for quarantine tests."
   use AshCell.Migrator
