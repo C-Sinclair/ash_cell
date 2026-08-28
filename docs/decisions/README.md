@@ -57,6 +57,7 @@ live in [`../design/`](../design), and reference these.
 |---|---|---|
 | [16](ADR-16-isolation-is-blast-radius.md) | Claim physical isolation as blast-radius reduction, not as compliance | corrects an earlier belief |
 | [19](ADR-19-the-cell-cut-is-a-choice.md) | Treat the cell cut as a choice, with one cell per tenant as the default | accepted |
+| [25](ADR-25-no-record-handoff-in-the-library.md) | Do not build record handoff into the library; publish the ordering and prove it with a probe | accepted |
 
 ## The five that correct something
 
