@@ -1,7 +1,7 @@
 # ADR-22 — Where the database-per-tenant runtime lives: the fork or AshCell
 
-**Status:** proposed — direction settled, seam open
-**Last changed:** 2026-08-24 — reframed: the fork's tenancy layer is deliberate, upstream-bound work, not a collision. What is open is how much of it AshCell reuses, not whether it should exist.
+**Status:** accepted — Option B shipped, seam still open
+**Last changed:** 2026-08-27 — Option B is implemented and the suite is green. The remaining work it named (naming the binder on resources that do not use the extension) was one line. Option C is still where this is heading and is still unverified.
 **Date:** 2026-08-24
 **Deciders:** Conor Sinclair (owns both repos)
 **Relates to:** [`ADR-02`](ADR-02-bind-in-the-data-layer.md), [`ADR-03`](ADR-03-fork-ash-sqlite-narrowly.md), [`ADR-07`](ADR-07-opaque-cell-keys.md), [`ADR-09`](ADR-09-snapshot-before-releasing-the-lease.md), [`ADR-10`](ADR-10-fail-closed-on-a-refused-shipment.md), [`ADR-19`](ADR-19-the-cell-cut-is-a-choice.md), [`../design/DD-01-cell-runtime.md`](../design/DD-01-cell-runtime.md), [`../design/DD-03-tenant-binding.md`](../design/DD-03-tenant-binding.md), `lib/ash_cell/manager.ex`, `lib/ash_cell/cell.ex`, `lib/ash_cell/registry.ex`, `lib/ash_cell/cell_key.ex`
@@ -48,8 +48,9 @@ them.**
 The forcing function is not aesthetic. `AshSqlite.DataLayer.Info.tenant_binder/1` now **defaults to
 `AshSqlite.Tenancy.Binder` for any `strategy :context` resource**, so a resource that previously ran
 unbound now routes into the fork's tenancy layer. In `ash_cell`'s own suite that layer is never
-started, and 40 of 244 tests fail with `unknown registry: AshCell.TestRepo.TenantRegistry`. The
-suite is red today, and it will stay red until this is decided.
+started, and 40 of 244 tests failed with `unknown registry: AshCell.TestRepo.TenantRegistry`.
+The suite was red from that commit until Option B was implemented on 2026-08-27; by then it had
+grown to 53 of 283, because two features landed on top of a red suite in the meantime.
 
 ## Options considered
 
@@ -80,6 +81,10 @@ extension.
 *Buys:* the smallest change that makes the suite green, and it preserves every invariant AshCell has
 evidence for. The fork's engine stays free to be the out-of-the-box answer without having to grow
 AshCell-shaped hooks.
+
+*Shipped 2026-08-27, and it was as small as predicted:* one `tenant_binder AshCell.Binder` line on
+`AshCell.Test.TenantPatient`, the only resource in the tree declaring `strategy :context` without
+the extension. 53 failures to 0.
 
 *Costs:* two implementations of the same local mechanics — file naming, activation, residency,
 quarantine — drifting independently. Two `encode/1`s with the same injectivity argument is the
@@ -159,6 +164,18 @@ This reasoning is judgement, not measurement. Nothing here was decided by a numb
   because a structure's tables are created by whichever layer migrates a cell.
 
 ## Evidence
+
+- **Option B implemented, 2026-08-27.** The only resource falling through to the fork's default was
+  `test/support/multitenant_patient.ex`, as this ADR predicted. Naming `tenant_binder
+  AshCell.Binder` on it took the suite from 53 failures to 0 — the moduledoc there now says why the
+  line cannot be removed, because the failure it prevents names a registry rather than a binder and
+  reads like an unrelated problem.
+- **Found while clearing the same redness, and unrelated to the binder:** every
+  `AshCell.Resource` resource was silently running with transactions off, because a Spark schema
+  default is indistinguishable from an explicit value at transformer time. Recorded in
+  [ADR-04](ADR-04-transactions-behind-an-opt-in-flag.md). It is listed here because it was hidden
+  *by* this redness: 5 real failures sat behind 53 noisy ones for three days, which is the cost of
+  landing features on a red suite.
 
 - Fork commit `e04364b`, "improvement: manage tenant databases, so `strategy :context` works out of
   the box", read at `ash_sqlite` local checkout, version 0.2.17.

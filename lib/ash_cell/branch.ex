@@ -18,7 +18,7 @@ defmodule AshCell.Branch do
   library that invented one would be silently picking a winner. So merge here is
   the one case that is decidable: if the origin has not been written to since the
   branch point, the branch's file becomes the origin's file. Anything else is
-  refused, with both change counters in the error so the caller can see the
+  refused, with both content digests in the error so the caller can see the
   divergence it has to resolve itself. See
   [ADR-23](../../docs/decisions/ADR-23-merge-by-fast-forward-or-refuse.md).
 
@@ -26,14 +26,15 @@ defmodule AshCell.Branch do
   actually do — a branch is where a migration or a risky change is *rehearsed*, and
   what gets promoted is the change, not a reconciliation of two histories.
 
-  ## Divergence is measured by change counter, not txid
+  ## Divergence is measured by a content digest, not txid and not the change counter
 
   The obvious fast-forward test — "has the origin's txid moved" — is wrong, because
   txid counts shipments and shipments are periodic, so an idle origin's txid
-  advances while its contents do not. `AshCell.History.change_counter/1` reads
-  SQLite's own file change counter instead, which moves only on a write
-  transaction. See that module for why it must only be read from a checkpointed
-  file.
+  advances while its contents do not. SQLite's own file change counter looked like
+  the answer and was implemented first; in WAL mode it does not move per write
+  transaction, so it reported "no divergence" for a rewritten database. Divergence
+  is `AshCell.History.digest/1`, a SHA-256 of the checkpointed file. See that
+  module for why it must only be read from a checkpointed file.
 
   ## What this does not do
 

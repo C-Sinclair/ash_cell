@@ -1,9 +1,10 @@
 # ADR-19 — Treat the cell cut as a choice, with one cell per tenant as the default
 
 **Status:** accepted
+**Last changed:** 2026-08-28 — qualified: the cut is a choice at design time, and changing it later is application work ([ADR-25](ADR-25-no-record-handoff-in-the-library.md))
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
-**Relates to:** [ADR-07](ADR-07-opaque-cell-keys.md) · [ADR-12](ADR-12-whole-file-snapshots-on-a-schedule.md) · [ADR-13](ADR-13-pool-size-one-and-cache.md)
+**Relates to:** [ADR-07](ADR-07-opaque-cell-keys.md) · [ADR-12](ADR-12-whole-file-snapshots-on-a-schedule.md) · [ADR-13](ADR-13-pool-size-one-and-cache.md) · [ADR-25](ADR-25-no-record-handoff-in-the-library.md)
 
 ## The decision
 
@@ -89,7 +90,10 @@ Demo-level corollaries worth carrying alongside the cut itself:
 - **What it makes worse.** Per-entity and windowed cuts increase cell count, which worsens the
   existing deploy-migration and thundering-herd problems; windowing bounds the effect per cell but
   does not remove it.
-- **What stays open.** No cross-cell fan-out and merge machinery exists; any cut needing
+- **What stays open.** The cut is a choice made at design time, and **changing it later is not a
+  library operation** — moving a record from one cut to another is an application-level migration
+  under [ADR-25](ADR-25-no-record-handoff-in-the-library.md)'s ordering, and AshCell does not help
+  with it. No cross-cell fan-out and merge machinery exists; any cut needing
   cross-window or cross-entity queries has to build that itself. The cost/benefit analysis above is
   reasoned, not measured.
 - **What now depends on it.** All five demos' choice of cut; `AshCell.CellKey.resolve/1`'s contract

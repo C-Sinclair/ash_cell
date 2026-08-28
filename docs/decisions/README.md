@@ -38,7 +38,7 @@ live in [`../design/`](../design), and reference these.
 | [14](ADR-14-bounded-read-staleness.md) | Bound read staleness on the monotonic clock, and expose it as explicit modes | accepted |
 | [20](ADR-20-choose-a-durability-level.md) | Choose SQLite's durability level (`synchronous`) | **proposed — open** |
 | [21](ADR-21-close-does-not-await-the-connection.md) | Close does not wait for the connection; the rewrite path asks it to | accepted |
-| [22](ADR-22-where-the-tenancy-runtime-lives.md) | Keep AshCell's own tenant binder as the fork grows its own engine; the seam is the cell-key split | **proposed — seam open** |
+| [22](ADR-22-where-the-tenancy-runtime-lives.md) | Keep AshCell's own tenant binder as the fork grows its own engine; the seam is the cell-key split | accepted — **seam open** |
 | [23](ADR-23-merge-by-fast-forward-or-refuse.md) | Merge a branch only when its origin has not moved; refuse divergence rather than reconcile it, and measure divergence by content digest | accepted |
 | [24](ADR-24-a-segment-set-is-not-a-disjoint-cover.md) | A stream reader de-duplicates by offset and does not trust the store's listing to be duplicate-free | corrects an earlier belief |
 
@@ -57,6 +57,7 @@ live in [`../design/`](../design), and reference these.
 |---|---|---|
 | [16](ADR-16-isolation-is-blast-radius.md) | Claim physical isolation as blast-radius reduction, not as compliance | corrects an earlier belief |
 | [19](ADR-19-the-cell-cut-is-a-choice.md) | Treat the cell cut as a choice, with one cell per tenant as the default | accepted |
+| [25](ADR-25-no-record-handoff-in-the-library.md) | Do not build record handoff into the library; publish the ordering and prove it with a probe | accepted |
 
 ## The five that correct something
 
@@ -76,6 +77,11 @@ false. Do not reintroduce the superseded position:
 - **[ADR-24](ADR-24-a-segment-set-is-not-a-disjoint-cover.md)** — a stream's segments were assumed
   to be a disjoint cover, so a read concatenated the tiers and nothing else. The store's listing
   returned one key twice under a concurrent write, and a resume came back with a duplicated offset.
+- **[ADR-04](ADR-04-transactions-behind-an-opt-in-flag.md)** — `AshCell.Resource` was documented as
+  turning transactions on and had silently stopped doing so. A Spark schema default is
+  indistinguishable from an explicitly written value at transformer time, so the "set it unless the
+  user did" transformer read the fork's `default: false` as the user's choice. Writes were
+  non-atomic with nothing raising.
 - **[ADR-23](ADR-23-merge-by-fast-forward-or-refuse.md)** — SQLite's file change counter was used
   as the fast-forward test because it is documented to move on every write transaction. In WAL
   mode it does not, so merge saw no divergence in a rewritten database and discarded the origin's
@@ -84,7 +90,10 @@ false. Do not reintroduce the superseded position:
 ## Still open
 
 [ADR-20](ADR-20-choose-a-durability-level.md) is undecided and the risk is live, and
-[ADR-22](ADR-22-where-the-tenancy-runtime-lives.md) has its direction settled but not its seam: AshCell keeps its own binder, and how much of the fork's tenancy engine it sits on top of is open. Beyond it, and
+[ADR-22](ADR-22-where-the-tenancy-runtime-lives.md) has shipped Option B — AshCell names its own
+binder and the suite is green — but not its seam: how much of the fork's tenancy engine AshCell sits
+on top of is still open, and Option C rests on an assumption nobody has tested, that the fork's
+manager can defer eviction to an external policy. Beyond it, and
 not yet worth an ADR each: every deploy migrates every cell; reads are not fenced the way writes
 are; background jobs have no request boundary to route at; thundering herd on node loss;
 `ObjectStore.list/2` has no S3 pagination, so it breaks past 1000 snapshots; snapshot and restore
