@@ -3,8 +3,8 @@ defmodule AshCell.Test.TenantPatient do
   Resource declaring context multitenancy *without* `AshCell.Resource` — the shape a
   caller gets from the fork alone, plus a binder named by hand.
 
-  `tenant_binder` is explicit here and must stay that way. Since ash_sqlite `e04364b`
-  the option defaults to `AshSqlite.Tenancy.Binder` for any `strategy :context`
+  `tenant_binder` is explicit here and must stay that way. Since ash_sqlite `76866fc`
+  the option defaults to `AshSqlite.MultiTenancy.Binder` for any `strategy :context`
   resource, and that layer is never started in this suite, so leaving it unset does
   not fall back to "unbound" — it routes into a registry that does not exist and
   fails with `unknown registry: AshCell.TestRepo.TenantRegistry`. Naming the binder on
