@@ -1,8 +1,9 @@
 # ADR-20 — Choose SQLite's durability level (`synchronous`)
 
 **Status:** proposed — still open, but with a plan that can close it
-**Last changed:** 2026-08-25 — added Option C (per-cell policy), and the argument that a throughput
-measurement is necessary but *not sufficient* to close this: it needs a test that can fail.
+**Last changed:** 2026-08-31 — pinned `journal_mode`, which this ADR's framing depends on;
+recorded that `synchronous` is already settable via repo config, and that `:normal`'s loss window
+is the WAL rather than the last commit. The decision itself is still open.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
 **Relates to:** [ADR-11](ADR-11-simulate-the-protocol-only.md) · [ADR-12](ADR-12-whole-file-snapshots-on-a-schedule.md) · [ADR-13](ADR-13-pool-size-one-and-cache.md) · [ADR-19](ADR-19-the-cell-cut-is-a-choice.md) · `demos/ledger/docs/design.md`
@@ -113,6 +114,26 @@ the docs and demo READMEs become conditional if C wins.
   `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:24`. `lib/ash_cell/cell.ex` passes neither, so
   every cell in the fleet currently runs `:normal` by omission rather than by choice. Read at
   exqlite 0.33 / ecto_sqlite3 0.21, 2026-08-25.
+- **`synchronous` is already reachable without a code change, and this was measured rather
+  than assumed.** `Ecto.Repo.Supervisor.init_config/4` merges the repo's application config
+  *underneath* the options passed to `start_link/1` (`deps/ecto/lib/ecto/repo/supervisor.ex:29`),
+  and `AshCell.Cell` passes no `synchronous`, so `config :my_app, MyApp.CellRepo, synchronous:
+  :full` reaches exqlite. Probed against a live cell: `PRAGMA synchronous` returned `2`. This
+  weakens the case for adding a DSL option now — Option C's per-cell policy is already
+  expressible per repo module, and the open question is which level to *choose*, not how to set
+  it. Documented in the README's "Durability on power loss" instead.
+- **`journal_mode` was inherited, not chosen, and is now pinned.** `exqlite`'s default is
+  `:delete` (`deps/exqlite/lib/exqlite/pragma.ex:15`); cells reached WAL only because
+  `ecto_sqlite3` supplies it (`deps/ecto_sqlite3/lib/ecto/adapters/sqlite3/connection.ex:23`).
+  This ADR's whole framing assumes WAL — `:normal` outside WAL risks corruption rather than a
+  bounded loss — so the mode is now passed in `repo_opts`, above application config. Probed:
+  config asking for `:delete` still opened `"wal"`.
+- **The loss window under `:normal` is the WAL, not the last transaction.** In WAL mode
+  `:normal` does not fsync at commit; it fsyncs at checkpoint, so the exposure is bounded by
+  `wal_autocheckpoint` (~4 MiB) rather than by one commit. A fleet with a `:store` narrows this
+  incidentally, because `AshCell.Replicator.snapshot/3` checkpoints before shipping and so
+  fsyncs at least once per `max_age_ms`; a fleet with no store does not checkpoint until drain.
+  This makes Option A's cost larger than "whatever exqlite's default throughput is" suggests.
 - **Not verified, and it is the point of the plan above:** that `:full` actually survives a
   power-loss event on the target filesystem. macOS in particular has a history of `fsync` not
   reaching stable storage without `F_FULLFSYNC`, so "we set the pragma" is not evidence that the

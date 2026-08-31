@@ -335,6 +335,62 @@ the cell key is quarantined, the process force-closed, and the lease dropped. Re
 is explicit and ordered: re-claim, restore, release
 ([ADR-10](docs/decisions/ADR-10-fail-closed-on-a-refused-shipment.md)).
 
+### Durability on power loss
+
+Two failures get conflated and they have different fixes at very different prices.
+
+**The node reboots and the volume survives.** SQLite replays the WAL. What is lost is
+whatever had not reached stable storage — and that is more than the last transaction.
+Cells run `synchronous: :normal`, which in WAL mode does not fsync at commit at all; it
+fsyncs at checkpoint. So the window is the whole WAL since the last checkpoint, bounded
+by `wal_autocheckpoint` at roughly 4 MiB. A fleet with a `:store` narrows this by
+accident rather than by design — `AshCell.Replicator` checkpoints before it ships, so
+`max_age_ms` also bounds the fsync interval. **A fleet with no store gets none of that**
+and does not checkpoint until it drains.
+
+**The host or the volume is gone.** Local disk is no help, so the loss is back to the
+last shipment: the table above, `max_age_ms` or `wal_bytes`, whichever fires first.
+
+Only the second costs object-store traffic. The first is a local fsync and costs no
+network at all.
+
+#### Choosing a `synchronous` level
+
+`synchronous` is a per-connection pragma, so it is per cell. AshCell does not set it,
+which means the repo's own application config reaches it — Ecto merges that config
+underneath the options AshCell passes:
+
+```elixir
+config :my_app, MyApp.CellRepo, synchronous: :full
+```
+
+`journal_mode` is *not* configurable this way. Cells pin `:wal` above config, because
+replication ships the `-wal` sidecar and `synchronous: :normal` outside WAL risks a
+corrupt database rather than a bounded loss.
+
+| Level | A returned `COMMIT` is | Costs | Reasonable when |
+|---|---|---|---|
+| `:off` | not synced, and the database can be **corrupted** by an OS crash, not merely truncated | nothing | Never for a cell you intend to keep. A disposable rebuild-from-source cell only. |
+| `:normal` *(current default, by omission)* | durable against process death, **not** against power loss or a kernel panic | nothing | The loss window is acceptable and bounded by shipping — caches, projections, anything reconstructible. |
+| `:full` | fsynced before it returns | one fsync per commit, local only | An acknowledgement is a promise: ledgers, audit logs, anything whose loss is not stale data but state that never happened. |
+| `:extra` | fsynced, plus the directory entry synced | a second fsync per commit | Rarely worth it over `:full`; it closes a window on the file's *creation*, not its contents. |
+
+Two things make `:full` cheaper than it looks. `pool_size: 1` already serialises a
+cell's writers, and batching several writes into one `AshCell.transaction/2` pays one
+fsync rather than one each.
+
+Two caveats, both load-bearing:
+
+- **On macOS, `:full` is not durability.** Plain `fsync` does not flush the drive's
+  write cache; that needs `F_FULLFSYNC`. So a local dev machine set to `:full` proves
+  nothing about a production Linux host, and vice versa.
+- **No test in this repo can tell you whether the level you chose works.** Killing a
+  process leaves the page cache intact, so every test passes under every level. The gap
+  is only observable across a machine boundary — a VM whose power is cut, or
+  `dm-log-writes` replaying the block stream to an arbitrary prefix.
+  [ADR-20](docs/decisions/ADR-20-choose-a-durability-level.md) is open and owns this;
+  the fleet default is `:normal` by omission rather than by decision.
+
 ## Reads and writes
 
 A cell is open on one node at a time, so *where* a statement runs is part of the
