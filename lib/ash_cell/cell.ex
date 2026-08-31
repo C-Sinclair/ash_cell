@@ -66,8 +66,19 @@ defmodule AshCell.Cell do
     # of DBConnection retrying for seconds. A cell that cannot be opened is
     # almost never a transient condition -- it is a wrong or destroyed key, or a
     # corrupt file -- and retrying turns a clear failure into a hang.
+    #
+    # journal_mode is pinned rather than inherited. Every cell has run in WAL, but
+    # only because `ecto_sqlite3` puts it there for us -- `exqlite`'s own default is
+    # `:delete`, so the mode a cell opens in depends on a `Keyword.put_new/3` two
+    # dependencies away. Two things here need WAL specifically and neither would say
+    # so if it changed: replication ships the `-wal` sidecar, and `synchronous:
+    # :normal` -- also a default we inherit -- is a bounded loss of recent commits in
+    # WAL, but risks a *corrupt* database in a rollback journal. Set here rather than
+    # left to fleet config for the same reason: this is a correctness requirement of
+    # the design, not a tuning knob, so passing it in `repo_opts` also overrides an
+    # application config that sets it to anything else.
     repo_opts =
-      [name: nil, database: path, pool_size: 1, backoff_type: :stop]
+      [name: nil, database: path, pool_size: 1, backoff_type: :stop, journal_mode: :wal]
       |> maybe_put_key(key)
 
     with :ok <- verify_key(key, Keyword.get(opts, :encrypted?, false)),
