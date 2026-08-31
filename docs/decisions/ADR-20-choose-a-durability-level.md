@@ -3,7 +3,9 @@
 **Status:** proposed — still open, but with a plan that can close it
 **Last changed:** 2026-08-31 — pinned `journal_mode`, which this ADR's framing depends on;
 recorded that `synchronous` is already settable via repo config, and that `:normal`'s loss window
-is the WAL rather than the last commit. The decision itself is still open.
+is the WAL rather than the last commit. Added the cost probe and its macOS numbers, which show
+group commit amortising the fsync almost perfectly. The decision itself is still open: the Linux
+numbers and the fault-injection test are both still owed.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
 **Relates to:** [ADR-11](ADR-11-simulate-the-protocol-only.md) · [ADR-12](ADR-12-whole-file-snapshots-on-a-schedule.md) · [ADR-13](ADR-13-pool-size-one-and-cache.md) · [ADR-19](ADR-19-the-cell-cut-is-a-choice.md) · `demos/ledger/docs/design.md`
@@ -64,11 +66,9 @@ ADR records the risk and the question, not an answer.
 What it would take to make a decision — and the second half of this is new, because the first half
 alone cannot close it:
 
-**1. Measure the cost.** A throughput and latency comparison of `:normal` versus `:full` (and
-`:extra`) under a realistic write load, measured the way
-[ADR-13](ADR-13-pool-size-one-and-cache.md)'s pool-size question was measured — a probe script,
-median of 5, not an estimate. Include a group-commit variant: batching amortises the fsync, and
-if it makes `:full` affordable then the whole tradeoff changes shape.
+**1. Measure the cost.** *Partly done — `scripts/write_durability_probe.exs` exists and has been
+run on macOS. Linux numbers are still owed, and they are the ones that decide this.* See
+"Measurements" below.
 
 **2. Build a test that can fail.** This is what has been missing, and it is why the risk has
 stayed live. **Killing the process proves nothing about fsync** — the page cache survives process
@@ -87,6 +87,54 @@ to touch real I/O.
 
 **3. Decide the shape**, between B and C, with the measurement in hand — and record which claims in
 the docs and demo READMEs become conditional if C wins.
+
+## Measurements
+
+`scripts/write_durability_probe.exs`, 1000 single-row inserts, one writer, `pool_size: 1`, WAL,
+`BEGIN IMMEDIATE` per batch. Reported as the min of 9 runs after a warmup, with the spread
+(max/min) alongside, because a median alone was actively misleading here — see the note on method
+below. **macOS 24.6 / APFS / aarch64, OTP 28.** These are not the numbers that decide the ADR.
+
+| Level | µs/commit @ batch 1 | µs/row @ 1 | µs/row @ 10 | µs/row @ 100 |
+|---|---|---|---|---|
+| *statement floor* | 38 | 38 | 13.0 | 9.5 |
+| `:off` | 57 | 57 | 19.9 | 13.6 |
+| `:normal` | 70 | 70 | 18.3 | 13.2 |
+| `:full` | 87 | 87 | 23.1 | 13.0 |
+| `:full` + `fullfsync` | 4375 | 4375 | 430.5 | 52.3 |
+| `:extra` | 97 | 97 | 18.6 | 12.5 |
+
+Three things fall out, and only the third is about throughput.
+
+**`:full` on macOS does not do the durable thing, and now there is a number for it.** `:full` sits
+70 → 87 µs against `:normal`, a gap narrower than either row's run-to-run spread (1.9x and 2.0x).
+Turning on `PRAGMA fullfsync` moves the same level to 4375 µs — **50x**. Darwin's `fsync` returns
+without flushing the drive's write cache, so a developer machine set to `:full` is measuring
+`:normal` and being reassured by the wrong number. This is the strongest argument yet that the
+level cannot be validated on a laptop.
+
+**The cost is per commit and independent of payload.** `:full` + `fullfsync` costs 4375, 4305 and
+5226 µs per commit at batch 1, 10 and 100 — essentially flat, because it is one hardware cache
+flush whatever is being flushed.
+
+**So group commit amortises it almost perfectly**, which is the finding that changes the shape of
+the decision. Per *row*, the same level falls 4375 → 430 → 52 µs as the batch grows 1 → 10 → 100.
+Durability stops being a throughput question and becomes a batching question: the price of an
+honest fsync is paid once per transaction, so an application that already groups its writes —
+which `AshCell.transaction/2` exists to let it do — pays almost nothing for `:full`. This weakens
+Option C considerably. Per-cell policy was motivated by `:full` being unaffordable for some
+workloads; if batching makes it affordable, a uniform `:full` keeps `no_acknowledged_write_lost`
+unconditional, which the ADR already argues is worth a lot.
+
+### On the method, because the first version of this probe was wrong
+
+Median of 5 was copied from [ADR-13](ADR-13-pool-size-one-and-cache.md) and did not survive
+contact. The levels that do not fsync are dominated by DBConnection round-trips rather than by
+SQLite — the statement floor row is 38 of `:normal`'s 70 µs — and on a laptop their run-to-run
+variance reached **20x**: two consecutive runs put `:normal` at batch 1 at 123 ms and 2149 ms. A
+median reported that as a result. The probe now reports min and spread, and the floor, so a gap
+narrower than the noise is visible as one. A probe that hides its variance is worse than no probe,
+and this one nearly shipped a fabricated ordering of `:off` against `:normal`.
 
 ## Consequences
 
@@ -108,7 +156,8 @@ the docs and demo READMEs become conditional if C wins.
 - exqlite's default is `synchronous: :normal`; `cell.ex` does not override it.
 - DST invariant `no_acknowledged_write_lost` and the simulator's model of the object store, not
   fsync behaviour, from [ADR-11](ADR-11-simulate-the-protocol-only.md).
-- No measurement of `:normal` versus `:full` throughput has been taken.
+- Probe: `scripts/write_durability_probe.exs`, min of 9 with spread, macOS only so far. See
+  "Measurements" above. Linux/Fly numbers are the ones that decide this and have not been taken.
 - `synchronous` is settable per connection: `deps/exqlite/lib/exqlite/connection.ex:115`
   (`:extra | :full | :normal | :off`, default `:normal`) and
   `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:24`. `lib/ash_cell/cell.ex` passes neither, so

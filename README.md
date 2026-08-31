@@ -375,9 +375,13 @@ corrupt database rather than a bounded loss.
 | `:full` | fsynced before it returns | one fsync per commit, local only | An acknowledgement is a promise: ledgers, audit logs, anything whose loss is not stale data but state that never happened. |
 | `:extra` | fsynced, plus the directory entry synced | a second fsync per commit | Rarely worth it over `:full`; it closes a window on the file's *creation*, not its contents. |
 
-Two things make `:full` cheaper than it looks. `pool_size: 1` already serialises a
-cell's writers, and batching several writes into one `AshCell.transaction/2` pays one
-fsync rather than one each.
+Two things make `:full` cheaper than it looks, and `scripts/write_durability_probe.exs`
+measures both. `pool_size: 1` already serialises a cell's writers, and an honest fsync
+costs the same whatever it is flushing — so batching several writes into one
+`AshCell.transaction/2` pays it once rather than once each. Measured on macOS, a
+genuinely-synced commit costs ~4.3 ms at any batch size, which is 4375 µs per row
+one-at-a-time and **52 µs per row in batches of 100**. Durability is a batching
+question more than a throughput one.
 
 Two caveats, both load-bearing:
 
