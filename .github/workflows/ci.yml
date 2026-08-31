@@ -124,6 +124,29 @@ jobs:
       - name: Check SQLCipher is linked
         run: mix cipher.check
 
+  durability-barrier:
+    name: Durability barrier (ADR-20 tier 1)
+    runs-on: ubuntu-latest
+
+    # Asserts that an acknowledged COMMIT requested a WAL barrier before it
+    # returned -- and, in the other direction, that `:normal` does not, so a green
+    # run cannot come from a trace that captured nothing.
+    #
+    # Its own job, and Linux-only by necessity. The test needs LD_PRELOAD to reach
+    # beam.smp, and macOS strips DYLD_INSERT_LIBRARIES under SIP before the BEAM
+    # starts, so a developer on a Mac runs this in Docker while CI runs it
+    # natively. No MinIO: durability here is local fsync, nothing to do with the
+    # object store.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - run: scripts/barrier_test.sh --native
+
   demo-collab-editor:
     name: Demo — collaborative editor
     runs-on: ubuntu-latest

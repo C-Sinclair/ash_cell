@@ -70,16 +70,56 @@ alone cannot close it:
 run on macOS. Linux numbers are still owed, and they are the ones that decide this.* See
 "Measurements" below.
 
-**2. Build a test that can fail.** This is what has been missing, and it is why the risk has
-stayed live. **Killing the process proves nothing about fsync** — the page cache survives process
-death, so every existing test passes under `:normal` and would keep passing under it no matter how
-wrong `:normal` is. The gap is only observable across a *machine* boundary:
+**2. Build a test that can fail.** *Tier 1 done — `scripts/barrier_test.sh`. Tier 2 outstanding.*
+**Killing the process proves nothing about fsync** — the page cache survives process death, so
+every existing test passes under `:normal` and would keep passing under it no matter how wrong
+`:normal` is. Two tiers, and the first one is now built:
 
-- A VM whose power is cut: run a cell inside QEMU, `kill -9` the VM mid-commit, boot it, and
-  assert the last acknowledged commit is present. Crude, real, and runnable.
-- Better, on Linux CI: `dm-log-writes` or `dm-flakey` to capture the block stream and replay it to
-  an arbitrary prefix, asserting every prefix leaves a valid database and no acknowledged write is
-  missing.
+- **Tier 1, the barrier assertion (built).** An `LD_PRELOAD` interposer records the cell's file
+  I/O and its `fsync`/`fdatasync` calls in order, and the workload plants a marker in that same
+  stream each time a write returns to Elixir. The assertion is then exactly the invariant: *if a
+  commit's window wrote the WAL, a barrier on the WAL was requested after the last of those writes
+  and before the acknowledgement.* Asserted in both directions — `:full` must have no violations,
+  and `:normal` must have some, because a trace that captured nothing would otherwise pass. See
+  "What tier 1 does not prove" below.
+- **Tier 2, prefix replay (outstanding).** Capture the write payloads too, reconstruct the
+  database and WAL truncated at every barrier boundary, and assert each prefix opens, passes
+  `PRAGMA integrity_check`, and contains every commit acknowledged before the cut. This is
+  `dm-log-writes`' `replay-log` in userspace.
+
+Two approaches were considered and rejected, both on evidence rather than taste:
+
+- **`dm-log-writes` / `dm-flakey` cannot run on a developer machine.** They need root, a
+  privileged container, and the module in the host kernel. Docker Desktop's linuxkit kernel
+  (6.12.76) has neither `dm_log_writes` nor `dm_flakey`, and no `modprobe` to load them. Worth
+  revisiting as a *CI-only* tier 3, since it is the only thing that sees the block layer.
+- **Killing a QEMU guest models a kernel panic, not power loss.** An earlier draft of this ADR
+  called it "crude, real, and runnable". It is runnable, but with `cache=writeback` the guest's
+  unflushed writes are in the *host* page cache, which survives `kill -9` on QEMU and gets written
+  out anyway — so it tests strictly less than it appears to. Real semantics need `cache=none` plus
+  a deliberately modelled volatile write cache.
+
+### What tier 1 does not prove
+
+It observes what the process asked the kernel for. It cannot see a filesystem reordering metadata,
+and it cannot see a drive that acknowledges a flush it has not performed. A pass means *the barrier
+was requested before the acknowledgement* — the claim that was previously unchecked — not *the
+bytes are on the platter*. Anything stronger needs the block layer, which is why tier 3 is worth
+keeping on the list.
+
+**And it cannot run on macOS at all**, which is worth stating plainly given the `fullfsync` finding
+above: SIP strips `DYLD_INSERT_LIBRARIES` when exec'ing a protected binary, and both `mix`
+(`#!/usr/bin/env bash`) and `erl` (`#!/bin/sh`) launch through one, so the variable never reaches
+`beam.smp`. Measured directly — `DYLD_INSERT_LIBRARIES=… /usr/bin/printenv DYLD_INSERT_LIBRARIES`
+prints nothing. So the platform where `:full` silently means `:normal` is the platform that cannot
+run the test that would catch it. On a Mac the script re-execs itself in a container; CI runs it
+natively.
+
+The *judgement* is separated from the harness for this reason. `AshCell.BarrierTrace` decides
+verdicts from a trace and is covered by `test/barrier_trace_test.exs` on every platform, including
+the ordering cases that a naive "count the syncs in this window" check would get wrong. A
+fault-injection harness whose verdict is quietly wrong reports a guarantee it never checked, which
+is precisely the failure this ADR is about.
 
 [ADR-11](ADR-11-simulate-the-protocol-only.md) is explicit that the simulator models the object
 store and not fsync, so it will keep agreeing with itself regardless. Whatever closes this ADR has
@@ -158,6 +198,12 @@ and this one nearly shipped a fabricated ordering of `:off` against `:normal`.
   fsync behaviour, from [ADR-11](ADR-11-simulate-the-protocol-only.md).
 - Probe: `scripts/write_durability_probe.exs`, min of 9 with spread, macOS only so far. See
   "Measurements" above. Linux/Fly numbers are the ones that decide this and have not been taken.
+- Barrier test: `scripts/barrier_test.sh`, `test/fault/barrier_shim.c`, `AshCell.BarrierTrace`.
+  Runs in CI (`durability-barrier`) and in Docker on macOS.
+- `dm_log_writes` and `dm_flakey` absent from Docker Desktop's linuxkit kernel 6.12.76, with no
+  `modprobe` available — checked in a `--privileged` container, 2026-08-31.
+- SIP strips `DYLD_INSERT_LIBRARIES` on exec of a protected binary; `mix` and `erl` both launch
+  through `/bin/sh` or `/usr/bin/env`. Checked directly, 2026-08-31.
 - `synchronous` is settable per connection: `deps/exqlite/lib/exqlite/connection.ex:115`
   (`:extra | :full | :normal | :off`, default `:normal`) and
   `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:24`. `lib/ash_cell/cell.ex` passes neither, so

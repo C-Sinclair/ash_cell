@@ -388,12 +388,18 @@ Two caveats, both load-bearing:
 - **On macOS, `:full` is not durability.** Plain `fsync` does not flush the drive's
   write cache; that needs `F_FULLFSYNC`. So a local dev machine set to `:full` proves
   nothing about a production Linux host, and vice versa.
-- **No test in this repo can tell you whether the level you chose works.** Killing a
-  process leaves the page cache intact, so every test passes under every level. The gap
-  is only observable across a machine boundary — a VM whose power is cut, or
-  `dm-log-writes` replaying the block stream to an arbitrary prefix.
-  [ADR-20](docs/decisions/ADR-20-choose-a-durability-level.md) is open and owns this;
-  the fleet default is `:normal` by omission rather than by decision.
+- **The Elixir suite cannot tell you whether the level you chose works.** Killing a
+  process leaves the page cache intact, so every `mix test` run passes under every
+  level. `scripts/barrier_test.sh` is the test that can fail: it traces the cell's
+  syscalls under `LD_PRELOAD` and asserts that a commit acknowledged to Elixir had
+  already requested an fsync on the WAL. It runs natively on Linux and re-execs in
+  Docker on a Mac — and cannot run on macOS directly, because SIP strips
+  `DYLD_INSERT_LIBRARIES` before the BEAM starts, so the platform where `:full`
+  silently means `:normal` is the one that cannot check for it. What it proves is
+  that the barrier was *requested* before the ack, not that the bytes reached the
+  platter; that needs the block layer.
+  [ADR-20](docs/decisions/ADR-20-choose-a-durability-level.md) is open and owns the
+  choice; the fleet default is `:normal` by omission rather than by decision.
 
 ## Reads and writes
 
