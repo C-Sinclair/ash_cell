@@ -390,14 +390,18 @@ Two caveats, both load-bearing:
   nothing about a production Linux host, and vice versa.
 - **The Elixir suite cannot tell you whether the level you chose works.** Killing a
   process leaves the page cache intact, so every `mix test` run passes under every
-  level. `scripts/barrier_test.sh` is the test that can fail: it traces the cell's
-  syscalls under `LD_PRELOAD` and asserts that a commit acknowledged to Elixir had
-  already requested an fsync on the WAL. It runs natively on Linux and re-execs in
-  Docker on a Mac — and cannot run on macOS directly, because SIP strips
-  `DYLD_INSERT_LIBRARIES` before the BEAM starts, so the platform where `:full`
-  silently means `:normal` is the one that cannot check for it. What it proves is
-  that the barrier was *requested* before the ack, not that the bytes reached the
-  platter; that needs the block layer.
+  level. Three separate harnesses exist for that reason, in increasing order of what
+  they can see and decreasing order of where they can run:
+
+  | | Asks | Runs |
+  |---|---|---|
+  | `scripts/barrier_test.sh --tier1` | Was an fsync on the WAL requested before the commit was acknowledged? | Linux, or Docker on a Mac |
+  | `scripts/barrier_test.sh --tier2` | If power failed at any point, does the database still open, and did every acknowledged, barriered commit survive? | same |
+  | `scripts/dm_log_writes_test.sh` | At the block layer, are the surviving commits a *prefix* of the acknowledged ones, or is there a hole? | CI only — needs root and `dm-log-writes` |
+
+  None of them can run on macOS directly: SIP strips `DYLD_INSERT_LIBRARIES` before
+  the BEAM starts, so the platform where `:full` silently means `:normal` is the one
+  that cannot check for it. On a Mac the script re-execs itself in a container.
   [ADR-20](docs/decisions/ADR-20-choose-a-durability-level.md) is open and owns the
   choice; the fleet default is `:normal` by omission rather than by decision.
 

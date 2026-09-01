@@ -4,8 +4,14 @@
 # barrier before it returned. See test/fault/barrier_shim.c for the method and
 # what it does not prove.
 #
-#   scripts/barrier_test.sh            # native on Linux, re-execs in Docker on macOS
+#   scripts/barrier_test.sh            # both tiers; native on Linux, Docker on macOS
+#   scripts/barrier_test.sh --tier1    # barriers only (fast)
+#   scripts/barrier_test.sh --tier2    # prefix replay only
 #   scripts/barrier_test.sh --docker   # force the container
+#
+# Tier 3, the block-layer check, is not here: it needs root and dm-log-writes,
+# which no developer machine reliably has. It runs in CI -- see the
+# `durability-block-layer` job and scripts/dm_log_writes_test.sh.
 #
 # Linux only, because it needs LD_PRELOAD to reach beam.smp: macOS strips
 # DYLD_INSERT_LIBRARIES under SIP before the BEAM ever starts. On a Mac this
@@ -22,6 +28,14 @@ cd "$(dirname "$0")/.."
 # and `mix` not being on the PATH.
 IMAGE="${BARRIER_IMAGE:-hexpm/elixir:1.19.1-erlang-28.1.1-ubuntu-noble-20250908}"
 VOLUME="ash_cell_barrier"
+
+case "${1:-}" in
+  --tier1|--tier2) TIER="$1"; shift ;;
+esac
+case "${2:-}" in
+  --tier1|--tier2) TIER="$2" ;;
+esac
+TIER="${TIER:-}"
 
 if [[ "${1:-}" == "--docker" ]] || { [[ "${1:-}" != "--native" ]] && [[ "$(uname -s)" == "Darwin" ]]; }; then
   if ! command -v docker >/dev/null; then
@@ -63,7 +77,7 @@ if [[ "${1:-}" == "--docker" ]] || { [[ "${1:-}" != "--native" ]] && [[ "$(uname
     -e MIX_BUILD_PATH=/state/build \
     -e HEX_HOME=/state/hex \
     -e MIX_HOME=/state/mix \
-    "$IMAGE" bash scripts/barrier_test.sh --native
+    "$IMAGE" bash scripts/barrier_test.sh --native "${TIER:-}"
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -94,33 +108,65 @@ mix compile >/dev/null
 
 status=0
 
-for spec in "normal:" "full:" "full:1"; do
-  level="${spec%%:*}"
-  fullfsync="${spec##*:}"
+if [[ "$TIER" != "--tier2" ]]; then
+  echo
+  echo "=== Tier 1: was a barrier requested before the acknowledgement? ==="
 
-  run="$WORK/${level}${fullfsync:+_fullfsync}"
-  mkdir -p "$run/marks"
-  : >"$run/trace.tsv"
+  for spec in "normal:" "full:" "full:1"; do
+    level="${spec%%:*}"
+    fullfsync="${spec##*:}"
 
-  # SHIM_MATCH is the cell directory, so the trace carries the cell's own files
-  # and nothing else -- not the BEAM's own I/O, and not the trace file itself.
-  if ! SHIM_LOG="$run/trace.tsv" \
-    SHIM_MATCH="$run/cells" \
-    SHIM_MARK="$run/marks/" \
-    LD_PRELOAD="$WORK/shim.so" \
-    PROBE_CELL_DIR="$run/cells" \
-    PROBE_SYNC="$level" \
-    PROBE_FULLFSYNC="$fullfsync" \
-    mix run test/fault/barrier_probe.exs; then
-    status=1
-  fi
+    run="$WORK/t1_${level}${fullfsync:+_fullfsync}"
+    mkdir -p "$run/marks"
+    : >"$run/trace.tsv"
 
-  echo "    trace: $run/trace.tsv ($(wc -l <"$run/trace.tsv") records)"
-done
+    # SHIM_MATCH is the cell directory, so the trace carries the cell's own files
+    # and nothing else -- not the BEAM's own I/O, and not the trace file itself.
+    # SHIM_DATA is unset here: tier 1 needs the order of operations, not bytes.
+    if ! SHIM_LOG="$run/trace.tsv" \
+      SHIM_MATCH="$run/cells" \
+      SHIM_MARK="$run/marks/" \
+      LD_PRELOAD="$WORK/shim.so" \
+      PROBE_CELL_DIR="$run/cells" \
+      PROBE_SYNC="$level" \
+      PROBE_FULLFSYNC="$fullfsync" \
+      mix run test/fault/barrier_probe.exs; then
+      status=1
+    fi
+
+    echo "    trace: $run/trace.tsv ($(wc -l <"$run/trace.tsv") records)"
+  done
+fi
+
+if [[ "$TIER" != "--tier1" ]]; then
+  echo
+  echo "=== Tier 2: does every reachable crash state still open? ==="
+
+  for level in normal full; do
+    run="$WORK/t2_$level"
+    mkdir -p "$run/marks"
+    : >"$run/trace.tsv"
+
+    # SHIM_DATA turns on payload capture, which is what makes a replay possible
+    # and is why this tier is run separately: the blob is the whole write volume
+    # of the workload, and tier 1 has no use for it.
+    if ! SHIM_LOG="$run/trace.tsv" \
+      SHIM_DATA="$run/data.blob" \
+      SHIM_MATCH="$run/cells" \
+      SHIM_MARK="$run/marks/" \
+      LD_PRELOAD="$WORK/shim.so" \
+      PROBE_CELL_DIR="$run/cells" \
+      PROBE_WORK="$run" \
+      PROBE_SYNC="$level" \
+      mix run test/fault/replay_probe.exs; then
+      status=1
+    fi
+  done
+fi
 
 echo
 if [[ $status -eq 0 ]]; then
-  echo "==> barrier invariant holds under :full, and is absent under :normal, as ADR-20 records."
+  echo "==> durability invariants hold. Tier 3 (block layer) runs in CI only."
 else
   echo "==> FAILED -- see above." >&2
 fi

@@ -145,7 +145,47 @@ jobs:
           version-file: .tool-versions
           version-type: strict
 
+      # Tiers 1 and 2. Tier 3 is a separate job because it needs root and a
+      # kernel module, and a failure there means something different.
       - run: scripts/barrier_test.sh --native
+
+  durability-block-layer:
+    name: Durability at the block layer (ADR-20 tier 3)
+    runs-on: ubuntu-latest
+
+    # Tiers 1 and 2 observe the process, which is what lets them run without
+    # privileges. This sits *under* the filesystem: dm-log-writes records every
+    # bio with its flush and FUA flags, so the device can be reconstructed as it
+    # would have been at any flush boundary. It is the only tier that can see a
+    # filesystem reordering writes between barriers -- which is precisely the
+    # assumption tier 2's prefix model takes on faith.
+    #
+    # Unverified as configured: it has never had a green run, because
+    # dm-log-writes cannot be loaded on a developer machine (Docker Desktop's
+    # linuxkit kernel carries neither dm_log_writes nor dm_flakey) and this is
+    # its first time on a runner. Non-blocking until it has passed once, so a
+    # setup problem here does not read as a durability failure. Remove
+    # continue-on-error as soon as it goes green.
+    continue-on-error: true
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: erlef/setup-beam@v1
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Install kernel modules and tools
+        run: |
+          sudo apt-get update
+          # dm-log-writes is not in the base image's module set.
+          sudo apt-get install -y "linux-modules-extra-$(uname -r)" e2fsprogs || \
+            echo "modules-extra unavailable for $(uname -r); the script will report it"
+
+      - run: mix deps.get
+
+      - run: sudo -E env "PATH=$PATH" scripts/dm_log_writes_test.sh
 
   demo-collab-editor:
     name: Demo — collaborative editor

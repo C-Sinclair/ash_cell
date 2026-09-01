@@ -34,20 +34,50 @@ defmodule AshCell.BarrierTrace do
 
   defstruct [:label, :wal_writes, :wal_syncs, :durable?]
 
-  @type record :: %{op: String.t(), path: String.t()}
+  @type record :: %{
+          op: String.t(),
+          path: String.t(),
+          off: integer(),
+          len: integer(),
+          data_off: integer()
+        }
   @type t :: %__MODULE__{}
 
-  @doc "Parses the shim's tab-separated trace. Unparseable lines are dropped."
+  @doc """
+  Parses the shim's tab-separated trace. Unparseable lines are dropped.
+
+  The fifth field is where the write's payload landed in the blob, and is -1 when
+  payload capture was off (`SHIM_DATA` unset) or the record has no payload. It is
+  optional so a tier 1 trace, which has four fields, still parses.
+  """
   @spec parse(String.t()) :: [record()]
   def parse(contents) do
     contents
     |> String.split("\n", trim: true)
     |> Enum.flat_map(fn line ->
       case String.split(line, "\t") do
-        [op, path, _off, _len] -> [%{op: op, path: path}]
+        [op, path, off, len] -> [record(op, path, off, len, "-1")]
+        [op, path, off, len, data_off] -> [record(op, path, off, len, data_off)]
         _ -> []
       end
     end)
+  end
+
+  defp record(op, path, off, len, data_off) do
+    %{
+      op: op,
+      path: path,
+      off: to_int(off),
+      len: to_int(len),
+      data_off: to_int(data_off)
+    }
+  end
+
+  defp to_int(value) do
+    case Integer.parse(value) do
+      {n, _} -> n
+      :error -> -1
+    end
   end
 
   @doc """

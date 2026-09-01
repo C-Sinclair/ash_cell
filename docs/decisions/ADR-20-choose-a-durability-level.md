@@ -1,11 +1,11 @@
 # ADR-20 — Choose SQLite's durability level (`synchronous`)
 
 **Status:** proposed — still open, but with a plan that can close it
-**Last changed:** 2026-08-31 — pinned `journal_mode`, which this ADR's framing depends on;
+**Last changed:** 2026-08-31 — built all three fault-injection tiers; pinned `journal_mode`, which this ADR's framing depends on;
 recorded that `synchronous` is already settable via repo config, and that `:normal`'s loss window
 is the WAL rather than the last commit. Added the cost probe and its macOS numbers, which show
 group commit amortising the fsync almost perfectly. The decision itself is still open: the Linux
-numbers and the fault-injection test are both still owed.
+numbers are still owed, and tier 3 has not yet had a green run.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
 **Relates to:** [ADR-11](ADR-11-simulate-the-protocol-only.md) · [ADR-12](ADR-12-whole-file-snapshots-on-a-schedule.md) · [ADR-13](ADR-13-pool-size-one-and-cache.md) · [ADR-19](ADR-19-the-cell-cut-is-a-choice.md) · `demos/ledger/docs/design.md`
@@ -70,7 +70,8 @@ alone cannot close it:
 run on macOS. Linux numbers are still owed, and they are the ones that decide this.* See
 "Measurements" below.
 
-**2. Build a test that can fail.** *Tier 1 done — `scripts/barrier_test.sh`. Tier 2 outstanding.*
+**2. Build a test that can fail.** *All three tiers built. Tiers 1 and 2 run locally and in CI;
+tier 3 is CI-only and has not yet had a green run.*
 **Killing the process proves nothing about fsync** — the page cache survives process death, so
 every existing test passes under `:normal` and would keep passing under it no matter how wrong
 `:normal` is. Two tiers, and the first one is now built:
@@ -82,30 +83,49 @@ every existing test passes under `:normal` and would keep passing under it no ma
   and before the acknowledgement.* Asserted in both directions — `:full` must have no violations,
   and `:normal` must have some, because a trace that captured nothing would otherwise pass. See
   "What tier 1 does not prove" below.
-- **Tier 2, prefix replay (outstanding).** Capture the write payloads too, reconstruct the
-  database and WAL truncated at every barrier boundary, and assert each prefix opens, passes
-  `PRAGMA integrity_check`, and contains every commit acknowledged before the cut. This is
-  `dm-log-writes`' `replay-log` in userspace.
+- **Tier 2, prefix replay (built).** The shim also captures write payloads, so the database and
+  WAL can be reconstructed as they would have been had power failed at an arbitrary point.
+  `scripts/barrier_test.sh --tier2`. Two assertions per cut, and the split between them matters:
+  *every* cut must leave a database that opens and passes `PRAGMA integrity_check` — including
+  under `:normal`, because `:normal` loses recent commits but must never corrupt — while only the
+  commits that were both acknowledged and barriered before the cut are required to be *present*.
+  The `-shm` is deliberately not restored: it is a volatile index a rebooted machine would not
+  have, and carrying a reconstructed one across would let the replay recover from state that no
+  longer exists.
+- **Tier 3, the block layer (built, unverified).** `scripts/dm_log_writes_test.sh`, CI-only.
+  `dm-log-writes` sits under the filesystem and records every bio with its flush and FUA flags, so
+  `replay-log` reconstructs the device at any flush boundary. Its assertion is the one neither
+  other tier can make: the surviving commits must be a **prefix** of the acknowledged sequence,
+  not merely a subset. Commits 1, 2 and 4 surviving without 3 is a hole, and a hole means a write
+  crossed a barrier it should not have — which is exactly the reordering tier 2's model assumes
+  away.
 
-Two approaches were considered and rejected, both on evidence rather than taste:
+Tier 3 is a *separate* job and non-blocking (`continue-on-error`) until it has passed once. It has
+never run green, because it cannot run anywhere it could be developed against: Docker Desktop's
+linuxkit kernel (6.12.76) carries neither `dm_log_writes` nor `dm_flakey`, and has no `modprobe`.
+Until it goes green on a runner, a red result there is far more likely to be a setup problem than
+a durability finding, and blocking merges on it would train everyone to ignore it.
 
-- **`dm-log-writes` / `dm-flakey` cannot run on a developer machine.** They need root, a
-  privileged container, and the module in the host kernel. Docker Desktop's linuxkit kernel
-  (6.12.76) has neither `dm_log_writes` nor `dm_flakey`, and no `modprobe` to load them. Worth
-  revisiting as a *CI-only* tier 3, since it is the only thing that sees the block layer.
+One approach was considered and rejected on evidence rather than taste:
+
 - **Killing a QEMU guest models a kernel panic, not power loss.** An earlier draft of this ADR
   called it "crude, real, and runnable". It is runnable, but with `cache=writeback` the guest's
   unflushed writes are in the *host* page cache, which survives `kill -9` on QEMU and gets written
   out anyway — so it tests strictly less than it appears to. Real semantics need `cache=none` plus
   a deliberately modelled volatile write cache.
 
-### What tier 1 does not prove
+### What these tiers do not prove
 
-It observes what the process asked the kernel for. It cannot see a filesystem reordering metadata,
-and it cannot see a drive that acknowledges a flush it has not performed. A pass means *the barrier
-was requested before the acknowledgement* — the claim that was previously unchecked — not *the
-bytes are on the platter*. Anything stronger needs the block layer, which is why tier 3 is worth
-keeping on the list.
+**Tiers 1 and 2 observe the process**, which is what lets them run without privileges. They see
+what it asked the kernel for. Tier 1's pass means *the barrier was requested before the
+acknowledgement*; tier 2's means *every prefix of those requests reconstructs to a database that
+opens*. Neither means *the bytes are on the platter*.
+
+**Tier 3 reaches the block layer** and closes the reordering gap, but not the last one: a drive
+that acknowledges a flush it has not performed will satisfy every tier here. Nothing short of
+pulling the plug on real hardware tests that, and it is not worth building — the failure it
+describes is a firmware bug, and the mitigation is buying different disks, not writing different
+code.
 
 **And it cannot run on macOS at all**, which is worth stating plainly given the `fullfsync` finding
 above: SIP strips `DYLD_INSERT_LIBRARIES` when exec'ing a protected binary, and both `mix`
@@ -198,8 +218,15 @@ and this one nearly shipped a fabricated ordering of `:off` against `:normal`.
   fsync behaviour, from [ADR-11](ADR-11-simulate-the-protocol-only.md).
 - Probe: `scripts/write_durability_probe.exs`, min of 9 with spread, macOS only so far. See
   "Measurements" above. Linux/Fly numbers are the ones that decide this and have not been taken.
-- Barrier test: `scripts/barrier_test.sh`, `test/fault/barrier_shim.c`, `AshCell.BarrierTrace`.
-  Runs in CI (`durability-barrier`) and in Docker on macOS.
+- Barrier test: `scripts/barrier_test.sh`, `test/fault/barrier_shim.c`, `AshCell.BarrierTrace`
+  (tier 1) and `AshCell.BarrierReplay` (tier 2). Runs in CI (`durability-barrier`) and in Docker
+  on macOS. Block layer: `scripts/dm_log_writes_test.sh`, CI job `durability-block-layer`,
+  non-blocking until its first green run.
+- The judgement in both local tiers is pure and covered natively by
+  `test/barrier_trace_test.exs` and `test/barrier_replay_test.exs` — 28 tests, including a
+  reconstruction round-tripped through a real SQLite database. A harness whose verdict is wrong
+  reports a guarantee it never checked, and in tier 2 a bad reconstruction does not look like a
+  bug: it looks like corruption, which is what the tier is hunting for.
 - `dm_log_writes` and `dm_flakey` absent from Docker Desktop's linuxkit kernel 6.12.76, with no
   `modprobe` available — checked in a `--privileged` container, 2026-08-31.
 - SIP strips `DYLD_INSERT_LIBRARIES` on exec of a protected binary; `mix` and `erl` both launch
