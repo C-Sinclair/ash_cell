@@ -117,7 +117,11 @@ defmodule AshCell.MixProject do
       # it builds against, and tracking the fork's default branch meant a push
       # there could turn this repo's CI red with no commit here to explain it.
       # Bump deliberately when the fork gains something this repo needs.
-      [github: "C-Sinclair/ash_sqlite", ref: "b64e301fa014bf63f0e94d5eae4b2e75208198e1", override: true]
+      [
+        github: "C-Sinclair/ash_sqlite",
+        ref: "3defa128fcdbc5b6bea71dcbf3d3c1e3e317d501",
+        override: true
+      ]
     end
   end
 
