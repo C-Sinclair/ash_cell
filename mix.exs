@@ -113,7 +113,11 @@ defmodule AshCell.MixProject do
     if File.dir?("../ash_sqlite") do
       [path: "../ash_sqlite", override: true]
     else
-      [github: "C-Sinclair/ash_sqlite", override: true]
+      # Pinned to a ref, not a branch. CI has no sibling checkout, so this is what
+      # it builds against, and tracking the fork's default branch meant a push
+      # there could turn this repo's CI red with no commit here to explain it.
+      # Bump deliberately when the fork gains something this repo needs.
+      [github: "C-Sinclair/ash_sqlite", ref: "b64e301fa014bf63f0e94d5eae4b2e75208198e1", override: true]
     end
   end
 
