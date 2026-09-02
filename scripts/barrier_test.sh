@@ -68,16 +68,27 @@ if [[ "${1:-}" == "--docker" ]] || { [[ "${1:-}" != "--native" ]] && [[ "$(uname
   # attempt at this wedged the daemon. The source is mounted read-write only
   # because `mix deps.get` may rewrite mix.lock; nothing else in here writes to
   # the repo, and the artefacts all land in the volume or in /tmp.
+  # The workspace root is mounted, not just this checkout, because mix.exs uses a
+  # path dep on ../ash_sqlite when that directory exists and falls back to git
+  # when it does not. Mounting only /app made the container resolve the fork from
+  # git and rewrite mix.lock -- which then landed in a commit and conflicted with
+  # main. It also meant the durability test ran against the pinned fork rather
+  # than the local one, so a fork change could not be tested here at all.
   exec docker run --rm \
-    -v "$PWD:/app" \
+    -v "$(cd .. && pwd):/work" \
     -v "$VOLUME:/state" \
-    -w /app \
+    -w "/work/$(basename "$PWD")" \
     -e MIX_ENV=test \
     -e MIX_DEPS_PATH=/state/deps \
     -e MIX_BUILD_PATH=/state/build \
     -e HEX_HOME=/state/hex \
     -e MIX_HOME=/state/mix \
     "$IMAGE" bash scripts/barrier_test.sh --native "${TIER:-}"
+
+# Guard against the lockfile drifting inside the container regardless: it is an
+# input to the build, not an output of this test, and a rewritten one has already
+# cost one merge conflict.
+LOCK_BEFORE=$(git rev-parse HEAD:mix.lock 2>/dev/null || echo none)
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -165,6 +176,12 @@ if [[ "$TIER" != "--tier1" ]]; then
       status=1
     fi
   done
+fi
+
+if [[ "$LOCK_BEFORE" != "none" ]] && [[ "$(git hash-object mix.lock)" != "$LOCK_BEFORE" ]]; then
+  echo
+  echo "note: mix.lock was rewritten during this run; restoring it." >&2
+  git checkout -- mix.lock
 fi
 
 echo
