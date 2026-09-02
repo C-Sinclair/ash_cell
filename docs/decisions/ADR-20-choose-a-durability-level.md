@@ -1,8 +1,11 @@
 # ADR-20 — Choose SQLite's durability level (`synchronous`)
 
 **Status:** proposed — still open, but with a plan that can close it
-**Last changed:** 2026-08-25 — added Option C (per-cell policy), and the argument that a throughput
-measurement is necessary but *not sufficient* to close this: it needs a test that can fail.
+**Last changed:** 2026-08-31 — built all three fault-injection tiers; pinned `journal_mode`, which this ADR's framing depends on;
+recorded that `synchronous` is already settable via repo config, and that `:normal`'s loss window
+is the WAL rather than the last commit. Added the cost probe and its macOS numbers, which show
+group commit amortising the fsync almost perfectly. The decision itself is still open: the Linux
+numbers are still owed, and tier 3 has not yet had a meaningful green run — its first one was false, see below.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
 **Relates to:** [ADR-11](ADR-11-simulate-the-protocol-only.md) · [ADR-12](ADR-12-whole-file-snapshots-on-a-schedule.md) · [ADR-13](ADR-13-pool-size-one-and-cache.md) · [ADR-19](ADR-19-the-cell-cut-is-a-choice.md) · `demos/ledger/docs/design.md`
@@ -63,22 +66,80 @@ ADR records the risk and the question, not an answer.
 What it would take to make a decision — and the second half of this is new, because the first half
 alone cannot close it:
 
-**1. Measure the cost.** A throughput and latency comparison of `:normal` versus `:full` (and
-`:extra`) under a realistic write load, measured the way
-[ADR-13](ADR-13-pool-size-one-and-cache.md)'s pool-size question was measured — a probe script,
-median of 5, not an estimate. Include a group-commit variant: batching amortises the fsync, and
-if it makes `:full` affordable then the whole tradeoff changes shape.
+**1. Measure the cost.** *Partly done — `scripts/write_durability_probe.exs` exists and has been
+run on macOS. Linux numbers are still owed, and they are the ones that decide this.* See
+"Measurements" below.
 
-**2. Build a test that can fail.** This is what has been missing, and it is why the risk has
-stayed live. **Killing the process proves nothing about fsync** — the page cache survives process
-death, so every existing test passes under `:normal` and would keep passing under it no matter how
-wrong `:normal` is. The gap is only observable across a *machine* boundary:
+**2. Build a test that can fail.** *Done for tiers 1 and 2 — both green on Linux CI. Tier 3 is
+built and CI-only, and has not yet had a green run.*
+**Killing the process proves nothing about fsync** — the page cache survives process death, so
+every existing test passes under `:normal` and would keep passing under it no matter how wrong
+`:normal` is. Two tiers, and the first one is now built:
 
-- A VM whose power is cut: run a cell inside QEMU, `kill -9` the VM mid-commit, boot it, and
-  assert the last acknowledged commit is present. Crude, real, and runnable.
-- Better, on Linux CI: `dm-log-writes` or `dm-flakey` to capture the block stream and replay it to
-  an arbitrary prefix, asserting every prefix leaves a valid database and no acknowledged write is
-  missing.
+- **Tier 1, the barrier assertion (built).** An `LD_PRELOAD` interposer records the cell's file
+  I/O and its `fsync`/`fdatasync` calls in order, and the workload plants a marker in that same
+  stream each time a write returns to Elixir. The assertion is then exactly the invariant: *if a
+  commit's window wrote the WAL, a barrier on the WAL was requested after the last of those writes
+  and before the acknowledgement.* Asserted in both directions — `:full` must have no violations,
+  and `:normal` must have some, because a trace that captured nothing would otherwise pass. See
+  "What tier 1 does not prove" below.
+- **Tier 2, prefix replay (built).** The shim also captures write payloads, so the database and
+  WAL can be reconstructed as they would have been had power failed at an arbitrary point.
+  `scripts/barrier_test.sh --tier2`. Two assertions per cut, and the split between them matters:
+  *every* cut must leave a database that opens and passes `PRAGMA integrity_check` — including
+  under `:normal`, because `:normal` loses recent commits but must never corrupt — while only the
+  commits that were both acknowledged and barriered before the cut are required to be *present*.
+  The `-shm` is deliberately not restored: it is a volatile index a rebooted machine would not
+  have, and carrying a reconstructed one across would let the replay recover from state that no
+  longer exists.
+- **Tier 3, the block layer (built, unverified).** `scripts/dm_log_writes_test.sh`, CI-only.
+  `dm-log-writes` sits under the filesystem and records every bio with its flush and FUA flags, so
+  `replay-log` reconstructs the device at any flush boundary. Its assertion is the one neither
+  other tier can make: the surviving commits must be a **prefix** of the acknowledged sequence,
+  not merely a subset. Commits 1, 2 and 4 surviving without 3 is a hole, and a hole means a write
+  crossed a barrier it should not have — which is exactly the reordering tier 2's model assumes
+  away.
+
+Tier 3 is a *separate* job and non-blocking (`continue-on-error`) until it has passed once. It has
+never run green, because it cannot run anywhere it could be developed against: Docker Desktop's
+linuxkit kernel (6.12.76) carries neither `dm_log_writes` nor `dm_flakey`, and has no `modprobe`.
+Until it goes green on a runner, a red result there is far more likely to be a setup problem than
+a durability finding, and blocking merges on it would train everyone to ignore it.
+
+One approach was considered and rejected on evidence rather than taste:
+
+- **Killing a QEMU guest models a kernel panic, not power loss.** An earlier draft of this ADR
+  called it "crude, real, and runnable". It is runnable, but with `cache=writeback` the guest's
+  unflushed writes are in the *host* page cache, which survives `kill -9` on QEMU and gets written
+  out anyway — so it tests strictly less than it appears to. Real semantics need `cache=none` plus
+  a deliberately modelled volatile write cache.
+
+### What these tiers do not prove
+
+**Tiers 1 and 2 observe the process**, which is what lets them run without privileges. They see
+what it asked the kernel for. Tier 1's pass means *the barrier was requested before the
+acknowledgement*; tier 2's means *every prefix of those requests reconstructs to a database that
+opens*. Neither means *the bytes are on the platter*.
+
+**Tier 3 reaches the block layer** and closes the reordering gap, but not the last one: a drive
+that acknowledges a flush it has not performed will satisfy every tier here. Nothing short of
+pulling the plug on real hardware tests that, and it is not worth building — the failure it
+describes is a firmware bug, and the mitigation is buying different disks, not writing different
+code.
+
+**And it cannot run on macOS at all**, which is worth stating plainly given the `fullfsync` finding
+above: SIP strips `DYLD_INSERT_LIBRARIES` when exec'ing a protected binary, and both `mix`
+(`#!/usr/bin/env bash`) and `erl` (`#!/bin/sh`) launch through one, so the variable never reaches
+`beam.smp`. Measured directly — `DYLD_INSERT_LIBRARIES=… /usr/bin/printenv DYLD_INSERT_LIBRARIES`
+prints nothing. So the platform where `:full` silently means `:normal` is the platform that cannot
+run the test that would catch it. On a Mac the script re-execs itself in a container; CI runs it
+natively.
+
+The *judgement* is separated from the harness for this reason. `AshCell.BarrierTrace` decides
+verdicts from a trace and is covered by `test/barrier_trace_test.exs` on every platform, including
+the ordering cases that a naive "count the syncs in this window" check would get wrong. A
+fault-injection harness whose verdict is quietly wrong reports a guarantee it never checked, which
+is precisely the failure this ADR is about.
 
 [ADR-11](ADR-11-simulate-the-protocol-only.md) is explicit that the simulator models the object
 store and not fsync, so it will keep agreeing with itself regardless. Whatever closes this ADR has
@@ -86,6 +147,128 @@ to touch real I/O.
 
 **3. Decide the shape**, between B and C, with the measurement in hand — and record which claims in
 the docs and demo READMEs become conditional if C wins.
+
+## Measurements
+
+`scripts/write_durability_probe.exs`, 1000 single-row inserts, one writer, `pool_size: 1`, WAL,
+`BEGIN IMMEDIATE` per batch. Reported as the min of 9 runs after a warmup, with the spread
+(max/min) alongside, because a median alone was actively misleading here — see the note on method
+below. **macOS 24.6 / APFS / aarch64, OTP 28.** These are not the numbers that decide the ADR.
+
+| Level | µs/commit @ batch 1 | µs/row @ 1 | µs/row @ 10 | µs/row @ 100 |
+|---|---|---|---|---|
+| *statement floor* | 38 | 38 | 13.0 | 9.5 |
+| `:off` | 57 | 57 | 19.9 | 13.6 |
+| `:normal` | 70 | 70 | 18.3 | 13.2 |
+| `:full` | 87 | 87 | 23.1 | 13.0 |
+| `:full` + `fullfsync` | 4375 | 4375 | 430.5 | 52.3 |
+| `:extra` | 97 | 97 | 18.6 | 12.5 |
+
+Three things fall out, and only the third is about throughput.
+
+**`:full` on macOS does not do the durable thing, and now there is a number for it.** `:full` sits
+70 → 87 µs against `:normal`, a gap narrower than either row's run-to-run spread (1.9x and 2.0x).
+Turning on `PRAGMA fullfsync` moves the same level to 4375 µs — **50x**. Darwin's `fsync` returns
+without flushing the drive's write cache, so a developer machine set to `:full` is measuring
+`:normal` and being reassured by the wrong number. This is the strongest argument yet that the
+level cannot be validated on a laptop.
+
+**The cost is per commit and independent of payload.** `:full` + `fullfsync` costs 4375, 4305 and
+5226 µs per commit at batch 1, 10 and 100 — essentially flat, because it is one hardware cache
+flush whatever is being flushed.
+
+**So group commit amortises it almost perfectly**, which is the finding that changes the shape of
+the decision. Per *row*, the same level falls 4375 → 430 → 52 µs as the batch grows 1 → 10 → 100.
+Durability stops being a throughput question and becomes a batching question: the price of an
+honest fsync is paid once per transaction, so an application that already groups its writes —
+which `AshCell.transaction/2` exists to let it do — pays almost nothing for `:full`. This weakens
+Option C considerably. Per-cell policy was motivated by `:full` being unaffordable for some
+workloads; if batching makes it affordable, a uniform `:full` keeps `no_acknowledged_write_lost`
+unconditional, which the ADR already argues is worth a lot.
+
+### On the method, because the first version of this probe was wrong
+
+Median of 5 was copied from [ADR-13](ADR-13-pool-size-one-and-cache.md) and did not survive
+contact. The levels that do not fsync are dominated by DBConnection round-trips rather than by
+SQLite — the statement floor row is 38 of `:normal`'s 70 µs — and on a laptop their run-to-run
+variance reached **20x**: two consecutive runs put `:normal` at batch 1 at 123 ms and 2149 ms. A
+median reported that as a result. The probe now reports min and spread, and the floor, so a gap
+narrower than the noise is visible as one. A probe that hides its variance is worse than no probe,
+and this one nearly shipped a fabricated ordering of `:off` against `:normal`.
+
+### First run on a runner, and what it found
+
+Tier 1 **passes** on Linux, on all three configurations, and tier 2 now passes on both. The two seams that had been reasoned
+about rather than tested both hold: `LD_PRELOAD` does reach `beam.smp` through `mix`'s launcher
+chain, and `openat` interposition does catch the BEAM's file I/O. Under `:full`, all five commits
+record `4 wal writes / 1 wal sync / durable`. Tier 2 passes under `:normal` — 22 cut points, none
+unreadable, none lost.
+
+Everything else that run found was a defect in the harness, and all three are worth recording
+because they are the same defect wearing different clothes: **a test that cannot see something
+reports its absence as a finding.**
+
+- **Vectored writes were not interposed.** `writev`/`pwritev` were missing, so a checkpoint's
+  pages could be written without entering the trace. Tier 2 then replayed a `.db` that was
+  genuinely missing those pages, the WAL truncate that followed removed the only other copy, and
+  the probe reported 13 acknowledged commits as lost. A gap in the capture is indistinguishable
+  from data loss downstream of it.
+- **A failed read was reported as an empty table.** `names/1` rescued every error to `{:ok, []}`,
+  so "could not read this table" became "this table is empty" became "the write was lost". Now
+  only `no such table` — a legitimate crash state — maps to empty; anything else fails as a
+  harness error.
+- **Tier 3 reported a pass having verified nothing.** `replay-log` failed with
+  `Magic doesn't match` because the log device cannot be read while the dm target still holds it,
+  `--list-marks` returned nothing, the verification loop never executed, and the script printed
+  success. It now fails when it lists no boundaries or checks none, and removes the target before
+  replaying. This was strictly worse than having no tier 3: a green check that means nothing is
+  read as a guarantee.
+
+- **A replay that resurrects a deleted file invents a state the machine was never in.** This is
+  the one worth remembering. The shim recorded writes and truncations but not `unlink`, and a
+  cell's directory legitimately contains a file that exists for part of a run and not the rest:
+  SQLite deletes its rollback journal the moment WAL mode is set. The replay kept it, so the
+  reconstructed database opened onto a *hot journal*, rolled itself back to zero pages, and
+  discarded the WAL as stale — which is why the diagnostics read `db=0 wal=absent`. Tier 2
+  reported five acknowledged commits lost, and the loss was manufactured entirely by the harness.
+  Found by dumping the trace rather than by reasoning: two earlier hypotheses, both about
+  uncaptured checkpoint pages, were wrong. Pinned by three tests in
+  `test/barrier_replay_test.exs`.
+
+- **The probe queried the wrong table, and it looked exactly like data loss.** The workload writes
+  `AshCell.Test.TenantPatient`, whose table is `tenant_patients`; the probe asked for `patients`.
+  That table also exists, because the migration creates both, so the query *succeeded* and
+  returned nothing, and every commit was reported missing from a database that held all of them.
+  This cost the most investigation of anything here, and the reason is worth keeping: three
+  hypotheses were spent looking for a reason the data was absent, when the data was present and
+  the question was wrong. Settled in one run by dumping `sqlite_master` and diffing the
+  reconstructed WAL against the live one — byte-identical, `integrity_check` clean, recovery
+  working. **A harness that asks the wrong question produces a finding indistinguishable from a
+  real one**, which is the same hazard as a harness that cannot see, and neither is visible from a
+  red build.
+- **The probe read the trace while it was still being written.** `AshCell.close/1` returns before
+  the connection has shut down, and that shutdown checkpoints — `AshCell.Cell` documents it as
+  happening "asynchronously, after this process is gone". Measured: 68 of 78 records present. The
+  missing ten were the interesting ones — the checkpoint's writes into the `.db`, the WAL
+  truncation, the sidecar deletions — so the post-checkpoint crash states were never tested. The
+  probes now wait for the trace to settle on size, which took tier 2's coverage from 33 cut points
+  and 35 required survivals to 37 and 55. The race was hiding coverage, not merely miscounting it.
+- **Two of the harness's own guards failed the run after every test had passed.** A `LOCK_BEFORE`
+  assignment sat inside the branch that ends in `exec`, so the native path never set it and
+  `set -u` aborted at the check; and in tier 3, `set -o pipefail` meant a `grep` with no match
+  killed the script *before* the guard written to explain that very situation could run. Guards
+  need the same scrutiny as the thing they guard.
+
+Once those were fixed, tier 2 passes under both levels, and the figure that matters moved off
+zero: **55 required commit-survivals across 30 valid cuts under `:full`**, all met. Worth stating
+precisely what `:normal`'s pass means, because it is weaker than it looks: every reachable crash
+state opens and passes `integrity_check`, which is the real claim that `:normal` loses commits but
+never corrupts, while **zero** survivals are *required* of it, because it barriers nothing. The
+survival dimension of that run is vacuous by construction.
+
+The workload half of tier 3 does work — a cell was created, written and closed on an
+ext4-on-dm-log-writes device, 20 commits acknowledged — so what remains is the replay, not the
+capture.
 
 ## Consequences
 
@@ -107,12 +290,46 @@ the docs and demo READMEs become conditional if C wins.
 - exqlite's default is `synchronous: :normal`; `cell.ex` does not override it.
 - DST invariant `no_acknowledged_write_lost` and the simulator's model of the object store, not
   fsync behaviour, from [ADR-11](ADR-11-simulate-the-protocol-only.md).
-- No measurement of `:normal` versus `:full` throughput has been taken.
+- Probe: `scripts/write_durability_probe.exs`, min of 9 with spread, macOS only so far. See
+  "Measurements" above. Linux/Fly numbers are the ones that decide this and have not been taken.
+- Barrier test: `scripts/barrier_test.sh`, `test/fault/barrier_shim.c`, `AshCell.BarrierTrace`
+  (tier 1) and `AshCell.BarrierReplay` (tier 2). Runs in CI (`durability-barrier`) and in Docker
+  on macOS. Block layer: `scripts/dm_log_writes_test.sh`, CI job `durability-block-layer`,
+  non-blocking until its first green run.
+- The judgement in both local tiers is pure and covered natively by
+  `test/barrier_trace_test.exs` and `test/barrier_replay_test.exs` — 28 tests, including a
+  reconstruction round-tripped through a real SQLite database. A harness whose verdict is wrong
+  reports a guarantee it never checked, and in tier 2 a bad reconstruction does not look like a
+  bug: it looks like corruption, which is what the tier is hunting for.
+- `dm_log_writes` and `dm_flakey` absent from Docker Desktop's linuxkit kernel 6.12.76, with no
+  `modprobe` available — checked in a `--privileged` container, 2026-08-31.
+- SIP strips `DYLD_INSERT_LIBRARIES` on exec of a protected binary; `mix` and `erl` both launch
+  through `/bin/sh` or `/usr/bin/env`. Checked directly, 2026-08-31.
 - `synchronous` is settable per connection: `deps/exqlite/lib/exqlite/connection.ex:115`
   (`:extra | :full | :normal | :off`, default `:normal`) and
   `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:24`. `lib/ash_cell/cell.ex` passes neither, so
   every cell in the fleet currently runs `:normal` by omission rather than by choice. Read at
   exqlite 0.33 / ecto_sqlite3 0.21, 2026-08-25.
+- **`synchronous` is already reachable without a code change, and this was measured rather
+  than assumed.** `Ecto.Repo.Supervisor.init_config/4` merges the repo's application config
+  *underneath* the options passed to `start_link/1` (`deps/ecto/lib/ecto/repo/supervisor.ex:29`),
+  and `AshCell.Cell` passes no `synchronous`, so `config :my_app, MyApp.CellRepo, synchronous:
+  :full` reaches exqlite. Probed against a live cell: `PRAGMA synchronous` returned `2`. This
+  weakens the case for adding a DSL option now — Option C's per-cell policy is already
+  expressible per repo module, and the open question is which level to *choose*, not how to set
+  it. Documented in the README's "Durability on power loss" instead.
+- **`journal_mode` was inherited, not chosen, and is now pinned.** `exqlite`'s default is
+  `:delete` (`deps/exqlite/lib/exqlite/pragma.ex:15`); cells reached WAL only because
+  `ecto_sqlite3` supplies it (`deps/ecto_sqlite3/lib/ecto/adapters/sqlite3/connection.ex:23`).
+  This ADR's whole framing assumes WAL — `:normal` outside WAL risks corruption rather than a
+  bounded loss — so the mode is now passed in `repo_opts`, above application config. Probed:
+  config asking for `:delete` still opened `"wal"`.
+- **The loss window under `:normal` is the WAL, not the last transaction.** In WAL mode
+  `:normal` does not fsync at commit; it fsyncs at checkpoint, so the exposure is bounded by
+  `wal_autocheckpoint` (~4 MiB) rather than by one commit. A fleet with a `:store` narrows this
+  incidentally, because `AshCell.Replicator.snapshot/3` checkpoints before shipping and so
+  fsyncs at least once per `max_age_ms`; a fleet with no store does not checkpoint until drain.
+  This makes Option A's cost larger than "whatever exqlite's default throughput is" suggests.
 - **Not verified, and it is the point of the plan above:** that `:full` actually survives a
   power-loss event on the target filesystem. macOS in particular has a history of `fsync` not
   reaching stable storage without `F_FULLFSYNC`, so "we set the pragma" is not evidence that the
