@@ -38,6 +38,13 @@
  *   SHIM_MARK   a path prefix; opening a path under it emits a MARK record,
  *               which is how the workload interleaves "this commit was
  *               acknowledged" into the syscall stream in the right order
+ * Deletions are recorded as carefully as writes. A replay that resurrects a file
+ * the process had deleted is not a state the machine could have been in, and this
+ * bit hard: SQLite's rollback journal from before WAL mode was set got replayed
+ * back into existence, so the reconstructed database saw a hot journal, rolled
+ * itself back to zero pages, and discarded the WAL as stale. Tier 2 reported that
+ * as five acknowledged commits lost.
+ *
  *   SHIM_DATA   optional; when set, every traced write's payload is appended to
  *               this blob and the trace record gains a fifth field giving its
  *               offset in it. Tier 2 (prefix replay) needs the bytes to
@@ -263,6 +270,46 @@ static void note_iov(const char *op, int fd, long off, const struct iovec *iov,
     written -= (ssize_t)n;
   }
 }
+
+/* Path-keyed rather than fd-keyed, because a deletion names a path and there may
+ * be no descriptor open on it. Emitted unconditionally for a matching path, so a
+ * file created and deleted entirely between two traced writes still appears. */
+static void note_path(const char *op, const char *path) {
+  if (inside || !path) return;
+  inside = 1;
+
+  pthread_mutex_lock(&lk);
+  read_env_locked();
+  const char *match = env_match;
+  int traced = match && strstr(path, match);
+  if (log_fp && traced) fprintf(log_fp, "%s\t%s\t0\t0\t-1\n", op, path);
+  pthread_mutex_unlock(&lk);
+
+  inside = 0;
+}
+
+int unlink(const char *path) {
+  static int (*real)(const char *);
+  if (!real) real = dlsym(RTLD_NEXT, "unlink");
+  int r = real(path);
+  if (r == 0) note_path("unlink", path);
+  return r;
+}
+
+int unlinkat(int dirfd, const char *path, int flags) {
+  static int (*real)(int, const char *, int);
+  if (!real) real = dlsym(RTLD_NEXT, "unlinkat");
+  int r = real(dirfd, path, flags);
+  if (r == 0) note_path("unlink", path);
+  return r;
+}
+
+/* rename(2) is deliberately NOT interposed. It would need a record carrying two
+ * paths, and the obvious shortcut -- unlinking both -- is wrong, because it
+ * discards the content that was moved. Nothing in a cell's write path renames:
+ * SQLite does not rename the database, the WAL or the journal. A restore does,
+ * and if this shim is ever pointed at one, this is the gap to close first.
+ */
 
 ssize_t writev(int fd, const struct iovec *iov, int count) {
   static ssize_t (*real)(int, const struct iovec *, int);

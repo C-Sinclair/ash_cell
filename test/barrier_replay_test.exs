@@ -81,6 +81,44 @@ defmodule AshCell.BarrierReplayTest do
       assert {:ok, %{"/a" => "abc"}} = BarrierReplay.reconstruct(records, blob, 2)
     end
 
+    # The bug this pins cost three CI iterations to find. SQLite deletes its
+    # rollback journal when WAL mode is set; a replay that kept it handed the
+    # reconstructed database a hot journal, which rolled the database back to zero
+    # pages and discarded the WAL. The probe reported acknowledged commits as lost,
+    # and the loss was entirely manufactured by the replay.
+    test "an unlinked file is gone from the reconstruction, not resurrected" do
+      blob = "headerabc"
+
+      records = [
+        write("/c.db-journal", 0, "header", 0),
+        write("/c.db", 0, "abc", 6),
+        rec("unlink", "/c.db-journal", 0, 0, -1)
+      ]
+
+      assert {:ok, files} = BarrierReplay.reconstruct(records, blob, 3)
+      assert files == %{"/c.db" => "abc"}
+      refute Map.has_key?(files, "/c.db-journal")
+    end
+
+    test "a cut before the unlink still has the file" do
+      blob = "header"
+      records = [write("/c.db-journal", 0, "header", 0), rec("unlink", "/c.db-journal", 0, 0, -1)]
+
+      assert {:ok, %{"/c.db-journal" => "header"}} = BarrierReplay.reconstruct(records, blob, 1)
+    end
+
+    test "a file recreated after being unlinked starts from empty" do
+      blob = "oldnew"
+
+      records = [
+        write("/a", 0, "old", 0),
+        rec("unlink", "/a", 0, 0, -1),
+        write("/a", 0, "new", 3)
+      ]
+
+      assert {:ok, %{"/a" => "new"}} = BarrierReplay.reconstruct(records, blob, 3)
+    end
+
     test "files are kept apart" do
       blob = "onetwo"
       records = [write("/a", 0, "one", 0), write("/b", 0, "two", 3)]

@@ -224,6 +224,17 @@ reports its absence as a finding.**
   replaying. This was strictly worse than having no tier 3: a green check that means nothing is
   read as a guarantee.
 
+- **A replay that resurrects a deleted file invents a state the machine was never in.** This is
+  the one worth remembering. The shim recorded writes and truncations but not `unlink`, and a
+  cell's directory legitimately contains a file that exists for part of a run and not the rest:
+  SQLite deletes its rollback journal the moment WAL mode is set. The replay kept it, so the
+  reconstructed database opened onto a *hot journal*, rolled itself back to zero pages, and
+  discarded the WAL as stale — which is why the diagnostics read `db=0 wal=absent`. Tier 2
+  reported five acknowledged commits lost, and the loss was manufactured entirely by the harness.
+  Found by dumping the trace rather than by reasoning: two earlier hypotheses, both about
+  uncaptured checkpoint pages, were wrong. Pinned by three tests in
+  `test/barrier_replay_test.exs`.
+
 The workload half of tier 3 does work — a cell was created, written and closed on an
 ext4-on-dm-log-writes device, 20 commits acknowledged — so what remains is the replay, not the
 capture.

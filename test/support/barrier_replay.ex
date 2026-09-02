@@ -21,6 +21,13 @@ defmodule AshCell.BarrierReplay do
   finds the bugs where a barrier is missing or in the wrong place, which is the
   class this ADR is about, and it finds them without root.
 
+  ## Deletions count
+
+  `unlink` is replayed like a write. A cell's directory legitimately contains
+  files that exist for part of the run and not the rest — SQLite's rollback
+  journal is deleted the moment WAL mode is set — and a replay that keeps them
+  reconstructs a state the machine was never in.
+
   ## Why the files start empty
 
   The workload deletes the cell directory before it runs, so every byte of every
@@ -75,6 +82,14 @@ defmodule AshCell.BarrierReplay do
       {:ok, place(r, binary_part(blob, r.data_off, r.len), files)}
     end
   end
+
+  # A file the process deleted must be gone from the reconstruction. Resurrecting
+  # one produces a state the machine could not have been in, and the consequence
+  # was not subtle: SQLite's rollback journal from before WAL mode was set came
+  # back, the reconstructed database saw a hot journal, rolled itself back to zero
+  # pages and discarded the WAL as stale. Tier 2 read that as five acknowledged
+  # commits lost.
+  defp apply_record(%{op: "unlink"} = r, _blob, files), do: {:ok, Map.delete(files, r.path)}
 
   defp apply_record(%{op: "truncate"} = r, _blob, files) do
     current = Map.get(files, r.path, <<>>)
