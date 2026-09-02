@@ -149,6 +149,18 @@ jobs:
       # kernel module, and a failure there means something different.
       - run: scripts/barrier_test.sh --native
 
+      # The trace and the payload blob are the whole input to the analysis, and
+      # without them a failure here can only be debugged by pushing another guess
+      # -- which cost several rounds. With them, the exact bytes can be replayed
+      # locally against real SQLite on any platform, because the replay is pure.
+      - name: Upload traces
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: durability-traces
+          path: /tmp/ash_cell_barrier/**/{trace.tsv,data.blob}
+          retention-days: 7
+
   durability-block-layer:
     name: Durability at the block layer (ADR-20 tier 3)
     runs-on: ubuntu-latest
