@@ -70,8 +70,8 @@ alone cannot close it:
 run on macOS. Linux numbers are still owed, and they are the ones that decide this.* See
 "Measurements" below.
 
-**2. Build a test that can fail.** *All three tiers built. Tiers 1 and 2 run locally and in CI;
-tier 3 is CI-only and has not yet had a green run.*
+**2. Build a test that can fail.** *Done for tiers 1 and 2 — both green on Linux CI. Tier 3 is
+built and CI-only, and has not yet had a green run.*
 **Killing the process proves nothing about fsync** — the page cache survives process death, so
 every existing test passes under `:normal` and would keep passing under it no matter how wrong
 `:normal` is. Two tiers, and the first one is now built:
@@ -251,10 +251,16 @@ reports its absence as a finding.**
   happening "asynchronously, after this process is gone". Measured: 68 of 78 records present. The
   missing ten were the interesting ones — the checkpoint's writes into the `.db`, the WAL
   truncation, the sidecar deletions — so the post-checkpoint crash states were never tested. The
-  probes now wait for the trace to settle on size.
+  probes now wait for the trace to settle on size, which took tier 2's coverage from 33 cut points
+  and 35 required survivals to 37 and 55. The race was hiding coverage, not merely miscounting it.
+- **Two of the harness's own guards failed the run after every test had passed.** A `LOCK_BEFORE`
+  assignment sat inside the branch that ends in `exec`, so the native path never set it and
+  `set -u` aborted at the check; and in tier 3, `set -o pipefail` meant a `grep` with no match
+  killed the script *before* the guard written to explain that very situation could run. Guards
+  need the same scrutiny as the thing they guard.
 
 Once those were fixed, tier 2 passes under both levels, and the figure that matters moved off
-zero: **35 required commit-survivals across 26 valid cuts under `:full`**, all met. Worth stating
+zero: **55 required commit-survivals across 30 valid cuts under `:full`**, all met. Worth stating
 precisely what `:normal`'s pass means, because it is weaker than it looks: every reachable crash
 state opens and passes `integrity_check`, which is the real claim that `:normal` loses commits but
 never corrupts, while **zero** survivals are *required* of it, because it barriers nothing. The
