@@ -84,11 +84,6 @@ if [[ "${1:-}" == "--docker" ]] || { [[ "${1:-}" != "--native" ]] && [[ "$(uname
     -e HEX_HOME=/state/hex \
     -e MIX_HOME=/state/mix \
     "$IMAGE" bash scripts/barrier_test.sh --native "${TIER:-}"
-
-# Guard against the lockfile drifting inside the container regardless: it is an
-# input to the build, not an output of this test, and a rewritten one has already
-# cost one merge conflict.
-LOCK_BEFORE=$(git rev-parse HEAD:mix.lock 2>/dev/null || echo none)
 fi
 
 if [[ "$(uname -s)" != "Linux" ]]; then
@@ -97,6 +92,13 @@ if [[ "$(uname -s)" != "Linux" ]]; then
 fi
 
 export MIX_ENV=test
+
+# The lockfile is an input to the build, not an output of this test, and a
+# rewritten one has already cost a merge conflict. Recorded here rather than
+# inside the macOS branch above: that branch ends in `exec`, so anything after it
+# runs only on the path that never needs it, and with `set -u` the later check
+# then failed the whole script *after* both tiers had passed.
+LOCK_BEFORE=$(git rev-parse HEAD:mix.lock 2>/dev/null || echo none)
 
 # git because mix.exs carries a git dependency, gcc to build the shim. Both are
 # absent from the hexpm/elixir image, and a missing git fails inside deps.get

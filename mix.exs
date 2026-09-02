@@ -16,6 +16,13 @@ defmodule AshCell.MixProject do
       elixir: "~> 1.18",
       start_permanent: Mix.env() == :prod,
       elixirc_paths: elixirc_paths(Mix.env()),
+
+      # test/fault holds probe scripts driven by scripts/barrier_test.sh, not
+      # ExUnit tests -- they are `mix run` entry points and must not be loaded by
+      # `mix test`. Elixir 1.19 warns about files under test/ that match no
+      # filter, and the warning is right to exist: the usual cause is a misnamed
+      # test file. These are named deliberately.
+      test_ignore_filters: [~r"^test/fault/"],
       deps: deps(),
       aliases: aliases(),
 
