@@ -112,12 +112,17 @@ echo "==> replaying"
 # flag and printed its usage instead, and only the "nothing was verified" guard
 # below turned that into a failure rather than a green run. Every flag used here
 # is one replay-log documents.
-total=$(replay-log --log "$LOG_LOOP" --number-entries 2>&1 | grep -oE '[0-9]+' | tail -1)
+# `|| true` is load-bearing: under `set -e -o pipefail` a grep that matches
+# nothing fails the whole pipeline and aborts the script *here*, before the guard
+# below can say what went wrong. That is how this job managed to die immediately
+# after printing "replaying" with no diagnosis at all.
+total=$(replay-log --log "$LOG_LOOP" --number-entries 2>&1 | grep -oE '[0-9]+' | tail -1 || true)
+raw_entries=$(replay-log --log "$LOG_LOOP" --number-entries 2>&1 || true)
 
 if [[ -z "$total" ]] || [[ "$total" -eq 0 ]]; then
   echo >&2
   echo "FAIL -- the log device holds no entries." >&2
-  replay-log --log "$LOG_LOOP" --number-entries 2>&1 | sed 's/^/  /' >&2
+  echo "$raw_entries" | sed 's/^/  /' >&2
   echo >&2
   echo "Nothing was verified. This is a harness failure, not a durability result." >&2
   exit 1
@@ -155,7 +160,7 @@ entry=0
 
 while true; do
   next=$(replay-log --log "$LOG_LOOP" --find --next-fua --start-entry "$entry" 2>/dev/null |
-    grep -oE '[0-9]+' | tail -1)
+    grep -oE '[0-9]+' | tail -1 || true)
 
   [[ -z "$next" ]] && break
   [[ "$next" -le "$entry" ]] && break
