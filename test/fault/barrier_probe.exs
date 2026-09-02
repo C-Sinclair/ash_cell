@@ -75,6 +75,41 @@ defmodule BarrierProbe do
       AshCell.Test.TenantPatient.create!("Patient #{i}", tenant: @tenant)
       mark(mark_dir, "commit-#{i}")
     end
+
+    settle(System.fetch_env!("SHIM_LOG"))
+  end
+
+  # `AshCell.close/1` returns before the cell's connection has finished shutting
+  # down, and that shutdown checkpoints -- `AshCell.Cell` documents it as
+  # happening "asynchronously, after this process is gone". Reading the trace
+  # immediately therefore analyses an accidental prefix of the run, and the
+  # records it misses are the interesting ones: the checkpoint's writes into the
+  # `.db`, the WAL truncation, and the deletion of the sidecars. Measured: 68 of
+  # 78 records were present without this wait.
+  #
+  # Settling on size rather than waiting a fixed time, so a slow machine gets
+  # more and a fast one is not punished.
+  defp settle(path, stable_for \\ 300, timeout \\ 10_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    wait_for_quiet(path, size(path), stable_for, deadline)
+  end
+
+  defp wait_for_quiet(path, last, stable_for, deadline) do
+    Process.sleep(stable_for)
+    now = size(path)
+
+    cond do
+      now == last -> :ok
+      System.monotonic_time(:millisecond) > deadline -> :ok
+      true -> wait_for_quiet(path, now, stable_for, deadline)
+    end
+  end
+
+  defp size(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} -> size
+      _ -> 0
+    end
   end
 
   defp set_fullfsync do

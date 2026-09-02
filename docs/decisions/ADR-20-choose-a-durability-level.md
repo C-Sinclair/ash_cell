@@ -198,7 +198,7 @@ and this one nearly shipped a fabricated ordering of `:off` against `:normal`.
 
 ### First run on a runner, and what it found
 
-Tier 1 **passes** on Linux, on all three configurations. The two seams that had been reasoned
+Tier 1 **passes** on Linux, on all three configurations, and tier 2 now passes on both. The two seams that had been reasoned
 about rather than tested both hold: `LD_PRELOAD` does reach `beam.smp` through `mix`'s launcher
 chain, and `openat` interposition does catch the BEAM's file I/O. Under `:full`, all five commits
 record `4 wal writes / 1 wal sync / durable`. Tier 2 passes under `:normal` — 22 cut points, none
@@ -234,6 +234,31 @@ reports its absence as a finding.**
   Found by dumping the trace rather than by reasoning: two earlier hypotheses, both about
   uncaptured checkpoint pages, were wrong. Pinned by three tests in
   `test/barrier_replay_test.exs`.
+
+- **The probe queried the wrong table, and it looked exactly like data loss.** The workload writes
+  `AshCell.Test.TenantPatient`, whose table is `tenant_patients`; the probe asked for `patients`.
+  That table also exists, because the migration creates both, so the query *succeeded* and
+  returned nothing, and every commit was reported missing from a database that held all of them.
+  This cost the most investigation of anything here, and the reason is worth keeping: three
+  hypotheses were spent looking for a reason the data was absent, when the data was present and
+  the question was wrong. Settled in one run by dumping `sqlite_master` and diffing the
+  reconstructed WAL against the live one — byte-identical, `integrity_check` clean, recovery
+  working. **A harness that asks the wrong question produces a finding indistinguishable from a
+  real one**, which is the same hazard as a harness that cannot see, and neither is visible from a
+  red build.
+- **The probe read the trace while it was still being written.** `AshCell.close/1` returns before
+  the connection has shut down, and that shutdown checkpoints — `AshCell.Cell` documents it as
+  happening "asynchronously, after this process is gone". Measured: 68 of 78 records present. The
+  missing ten were the interesting ones — the checkpoint's writes into the `.db`, the WAL
+  truncation, the sidecar deletions — so the post-checkpoint crash states were never tested. The
+  probes now wait for the trace to settle on size.
+
+Once those were fixed, tier 2 passes under both levels, and the figure that matters moved off
+zero: **35 required commit-survivals across 26 valid cuts under `:full`**, all met. Worth stating
+precisely what `:normal`'s pass means, because it is weaker than it looks: every reachable crash
+state opens and passes `integrity_check`, which is the real claim that `:normal` loses commits but
+never corrupts, while **zero** survivals are *required* of it, because it barriers nothing. The
+survival dimension of that run is vacuous by construction.
 
 The workload half of tier 3 does work — a cell was created, written and closed on an
 ext4-on-dm-log-writes device, 20 commits acknowledged — so what remains is the replay, not the

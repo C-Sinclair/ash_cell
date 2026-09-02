@@ -37,13 +37,16 @@ defmodule DmVerify do
         other -> fail("integrity_check failed: #{inspect(other)}")
       end
 
-      case Exqlite.Sqlite3.prepare(conn, "SELECT name FROM patients") do
+      case Exqlite.Sqlite3.prepare(conn, "SELECT name FROM tenant_patients") do
         {:ok, stmt} ->
           {:ok, rows} = Exqlite.Sqlite3.fetch_all(conn, stmt)
           List.flatten(rows)
 
         # The cut landed before the migration was durable. A database with no
         # table yet is a valid crash state, not a failure.
+        #
+        # `tenant_patients`, not `patients`: both exist after the migration, and
+        # querying the wrong one returns an empty result that reads as data loss.
         _ ->
           []
       end

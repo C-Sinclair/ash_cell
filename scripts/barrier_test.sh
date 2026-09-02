@@ -26,7 +26,7 @@ cd "$(dirname "$0")/.."
 # Overridable, because a pinned hexpm/elixir tag carries a build date and goes
 # stale. `docker pull` failing with a clear message beats the container starting
 # and `mix` not being on the PATH.
-IMAGE="${BARRIER_IMAGE:-hexpm/elixir:1.19.1-erlang-28.1.1-ubuntu-noble-20250908}"
+IMAGE="${BARRIER_IMAGE:-hexpm/elixir:1.19.1-erlang-28.1.1-ubuntu-noble-20260509.1}"
 VOLUME="ash_cell_barrier"
 
 case "${1:-}" in
@@ -87,10 +87,13 @@ fi
 
 export MIX_ENV=test
 
-if ! command -v gcc >/dev/null; then
-  echo "==> installing gcc"
+# git because mix.exs carries a git dependency, gcc to build the shim. Both are
+# absent from the hexpm/elixir image, and a missing git fails inside deps.get
+# with a message that does not mention the container.
+if ! command -v gcc >/dev/null || ! command -v git >/dev/null; then
+  echo "==> installing gcc and git"
   apt-get -qq update >/dev/null
-  apt-get -qq install -y gcc >/dev/null
+  apt-get -qq install -y gcc git >/dev/null 2>&1
 fi
 
 WORK="${TMPDIR:-/tmp}/ash_cell_barrier"
@@ -100,7 +103,7 @@ mkdir -p "$WORK"
 echo "==> building the shim"
 gcc -shared -fPIC -O1 -Wall -o "$WORK/shim.so" test/fault/barrier_shim.c -ldl
 
-echo "==> fetching and compiling deps (cached in tmp/barrier)"
+echo "==> fetching and compiling deps (cached in the ash_cell_barrier volume)"
 mix local.hex --force --if-missing >/dev/null 2>&1 || mix local.hex --force >/dev/null
 mix local.rebar --force >/dev/null 2>&1 || true
 mix deps.get >/dev/null

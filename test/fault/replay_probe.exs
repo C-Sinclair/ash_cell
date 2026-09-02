@@ -72,10 +72,44 @@ defmodule ReplayProbe do
       mark(mark_dir, "commit-#{i}")
     end
 
-    # Closed before the trace is read, so the cell's own shutdown -- which
-    # checkpoints -- is part of the recorded stream rather than happening
-    # underneath the analysis.
+    # Closed and then waited on, so the cell's own shutdown -- which checkpoints,
+    # truncates the WAL and deletes the sidecars -- is part of the recorded stream
+    # rather than landing underneath the analysis.
     AshCell.close(@tenant)
+    settle(System.fetch_env!("SHIM_LOG"))
+  end
+
+  # `AshCell.close/1` returns before the cell's connection has finished shutting
+  # down, and that shutdown checkpoints -- `AshCell.Cell` documents it as
+  # happening "asynchronously, after this process is gone". Reading the trace
+  # immediately therefore analyses an accidental prefix of the run, and the
+  # records it misses are the interesting ones: the checkpoint's writes into the
+  # `.db`, the WAL truncation, and the deletion of the sidecars. Measured: 68 of
+  # 78 records were present without this wait.
+  #
+  # Settling on size rather than waiting a fixed time, so a slow machine gets
+  # more and a fast one is not punished.
+  defp settle(path, stable_for \\ 300, timeout \\ 10_000) do
+    deadline = System.monotonic_time(:millisecond) + timeout
+    wait_for_quiet(path, size(path), stable_for, deadline)
+  end
+
+  defp wait_for_quiet(path, last, stable_for, deadline) do
+    Process.sleep(stable_for)
+    now = size(path)
+
+    cond do
+      now == last -> :ok
+      System.monotonic_time(:millisecond) > deadline -> :ok
+      true -> wait_for_quiet(path, now, stable_for, deadline)
+    end
+  end
+
+  defp size(path) do
+    case File.stat(path) do
+      {:ok, %{size: size}} -> size
+      _ -> 0
+    end
   end
 
   defp mark(dir, label), do: File.read(Path.join(dir, label))
@@ -175,13 +209,19 @@ defmodule ReplayProbe do
   # A commit is identified by the row it wrote, so "did this survive" is a query
   # rather than an inference from the trace.
   #
+  # The table is `tenant_patients`, which `AshCell.Test.TenantPatient` writes.
+  # Querying `patients` instead cost several rounds of investigation and looked
+  # exactly like data loss: that table also exists, because the migration creates
+  # both, so the query succeeded and returned nothing. Every expected commit was
+  # then reported missing from a database that in fact held all of them.
+  #
   # "No such table" and "could not read the table" are separated deliberately.
   # An earlier version rescued both to an empty list, which turned every failure
   # to read into a report of lost data -- a harness bug wearing the costume of the
   # exact finding this tier exists to produce. A missing table is a legitimate
   # crash state; anything else is the harness failing and must say so.
   defp names(conn) do
-    case Exqlite.Sqlite3.prepare(conn, "SELECT name FROM patients") do
+    case Exqlite.Sqlite3.prepare(conn, "SELECT name FROM tenant_patients") do
       {:ok, stmt} ->
         case Exqlite.Sqlite3.fetch_all(conn, stmt) do
           {:ok, rows} -> {:ok, rows |> List.flatten() |> Enum.map(&commit_label/1)}
