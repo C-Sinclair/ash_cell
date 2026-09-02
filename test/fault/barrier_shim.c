@@ -54,6 +54,7 @@
 #include <dlfcn.h>
 #include <pthread.h>
 #include <sys/types.h>
+#include <sys/uio.h>
 
 /* Linux-only, and defined away so this file still syntax-checks on a Mac. The
  * shim cannot *run* there, but a compile error found only inside the container
@@ -240,6 +241,58 @@ int fdatasync(int fd) {
   if (!real) real = dlsym(RTLD_NEXT, "fdatasync");
   int r = real(fd);
   note("SYNC", fd, 0, 0);
+  return r;
+}
+
+/* Vectored writes were missing from the first version of this shim, and their
+ * absence did not look like a missing interposer -- it looked like data loss.
+ * Tier 2 replayed a database whose checkpointed pages had never been captured,
+ * the WAL truncate that followed removed the only other copy, and the probe
+ * reported acknowledged commits as lost. A gap in the trace is indistinguishable
+ * from a durability bug downstream of it, so the safe move is to interpose every
+ * call that can put bytes in a file. */
+static void note_iov(const char *op, int fd, long off, const struct iovec *iov,
+                     int count, ssize_t written) {
+  long at = off;
+
+  for (int i = 0; i < count && written > 0; i++) {
+    size_t n = iov[i].iov_len;
+    if ((ssize_t)n > written) n = (size_t)written;
+    note_data(op, fd, at, (long)n, iov[i].iov_base, n);
+    if (at >= 0) at += (long)n;
+    written -= (ssize_t)n;
+  }
+}
+
+ssize_t writev(int fd, const struct iovec *iov, int count) {
+  static ssize_t (*real)(int, const struct iovec *, int);
+  if (!real) real = dlsym(RTLD_NEXT, "writev");
+  ssize_t r = real(fd, iov, count);
+  if (r > 0) note_iov("write", fd, -1, iov, count, r);
+  return r;
+}
+
+ssize_t pwritev(int fd, const struct iovec *iov, int count, off_t off) {
+  static ssize_t (*real)(int, const struct iovec *, int, off_t);
+  if (!real) real = dlsym(RTLD_NEXT, "pwritev");
+  ssize_t r = real(fd, iov, count, off);
+  if (r > 0) note_iov("write", fd, (long)off, iov, count, r);
+  return r;
+}
+
+ssize_t pwritev64(int fd, const struct iovec *iov, int count, off_t off) {
+  static ssize_t (*real)(int, const struct iovec *, int, off_t);
+  if (!real) real = dlsym(RTLD_NEXT, "pwritev64");
+  ssize_t r = real(fd, iov, count, off);
+  if (r > 0) note_iov("write", fd, (long)off, iov, count, r);
+  return r;
+}
+
+int ftruncate64(int fd, off_t len) {
+  static int (*real)(int, off_t);
+  if (!real) real = dlsym(RTLD_NEXT, "ftruncate64");
+  int r = real(fd, len);
+  note("truncate", fd, (long)len, 0);
   return r;
 }
 

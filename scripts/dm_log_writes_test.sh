@@ -50,6 +50,7 @@ export PROBE_ACK_FILE="$WORK/acknowledged.txt"
 cleanup() {
   set +e
   umount "$MNT" 2>/dev/null
+  # Already removed before the replay in the happy path; harmless if gone.
   dmsetup remove "$DM_NAME" 2>/dev/null
   [[ -n "${DEV_LOOP:-}" ]] && losetup -d "$DEV_LOOP" 2>/dev/null
   [[ -n "${LOG_LOOP:-}" ]] && losetup -d "$LOG_LOOP" 2>/dev/null
@@ -100,40 +101,83 @@ MIX_ENV=test PROBE_CELL_DIR="$CELLS" PROBE_SYNC="${PROBE_SYNC:-full}" \
 
 umount "$MNT"
 
+echo "==> releasing the device before reading its log"
+# The log superblock is not readable while the dm target still holds the device,
+# which is what "Magic doesn't match" means: the first attempt replayed before
+# removing the target and read nothing. Remove it, keeping both loop devices.
+dmsetup remove "$DM_NAME"
+
 echo "==> replaying every flush boundary"
-# --check fua replays to each FUA/flush boundary rather than to every bio, which
-# is the set of states a device can actually be caught in. Every one of them must
-# mount and fsck clean: a crash may lose recent commits, it may never leave a
-# filesystem or a database that cannot be read.
+
+marks=$(replay-log --log "$LOG_LOOP" --list-marks 2>&1) || true
+
+# A tier that verifies nothing must not report success. The first run of this
+# script did exactly that: replay-log failed, the loop below never executed, and
+# it printed a pass. Tiers 1 and 2 both guard against an empty trace and this one
+# did not, which made it strictly worse than having no tier 3 at all -- a green
+# check that means nothing is read as a guarantee.
+if ! grep -qE '^[0-9]+' <<<"$marks"; then
+  echo >&2
+  echo "FAIL -- could not read any flush boundaries from the log device." >&2
+  echo "replay-log said:" >&2
+  echo "$marks" | sed 's/^/  /' >&2
+  echo >&2
+  echo "Nothing was verified. This is a harness failure, not a durability result." >&2
+  exit 1
+fi
+
+boundaries=$(grep -cE '^[0-9]+' <<<"$marks")
+echo "    $boundaries flush boundaries to replay"
+
 failures=0
-entries=$(replay-log --log "$LOG_LOOP" --replay "$DEV_LOOP" --check fua --num 0 2>&1 | tail -1 || true)
-echo "    log entries: $entries"
+checked=0
 
 while read -r mark; do
-  [[ -z "$mark" ]] && continue
+  [[ "$mark" =~ ^[0-9]+ ]] || continue
+  mark="${mark%% *}"
 
-  replay-log --log "$LOG_LOOP" --replay "$DEV_LOOP" --end-mark "$mark" >/dev/null 2>&1 || continue
+  if ! replay-log --log "$LOG_LOOP" --replay "$DEV_LOOP" --end-mark "$mark" >/dev/null 2>&1; then
+    echo "    FAIL: could not replay to mark $mark"
+    failures=$((failures + 1))
+    continue
+  fi
 
+  # A crash may lose recent commits. It may never leave a filesystem that fsck
+  # rejects, so this is a failure rather than a skip.
   if ! fsck.ext4 -fn "$DEV_LOOP" >/dev/null 2>&1; then
     echo "    FAIL: filesystem inconsistent at mark $mark"
     failures=$((failures + 1))
     continue
   fi
 
-  mount "$DEV_LOOP" "$MNT" 2>/dev/null || continue
+  if ! mount "$DEV_LOOP" "$MNT" 2>/dev/null; then
+    echo "    FAIL: fsck passed but the filesystem would not mount at mark $mark"
+    failures=$((failures + 1))
+    continue
+  fi
 
   if ! MIX_ENV=test PROBE_CELL_DIR="$MNT/cells" PROBE_ACK_FILE="$PROBE_ACK_FILE" \
     mix run test/fault/dm_verify.exs; then
-    echo "    FAIL: database unreadable or lost an acknowledged commit at mark $mark"
+    echo "    FAIL: database unreadable or commits out of order at mark $mark"
     failures=$((failures + 1))
   fi
 
+  checked=$((checked + 1))
   umount "$MNT"
-done < <(replay-log --log "$LOG_LOOP" --list-marks 2>/dev/null || true)
+done <<<"$marks"
+
+if [[ $checked -eq 0 ]]; then
+  echo >&2
+  echo "FAIL -- $boundaries boundaries were listed but none could be checked." >&2
+  echo "Nothing was verified; do not read this as a pass." >&2
+  exit 1
+fi
+
+echo "    checked $checked boundaries"
 
 echo
 if [[ $failures -eq 0 ]]; then
-  echo "==> every flush boundary replayed to a consistent filesystem and a readable database."
+  echo "==> $checked flush boundaries replayed to a consistent filesystem and an ordered database."
 else
   echo "==> FAILED at $failures replay points." >&2
   exit 1

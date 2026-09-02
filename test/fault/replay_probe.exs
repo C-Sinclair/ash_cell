@@ -122,17 +122,33 @@ defmodule ReplayProbe do
     try do
       with :ok <- integrity(conn),
            {:ok, present} <- names(conn) do
-        missing = expected -- present
+        case expected -- present do
+          [] ->
+            %{cut: cut, status: :ok, present: length(present), expected: length(expected)}
 
-        if missing == [],
-          do: %{cut: cut, status: :ok, present: length(present), expected: length(expected)},
-          else: %{cut: cut, status: :lost, missing: missing}
+          missing ->
+            %{cut: cut, status: :lost, missing: missing, present: present, sizes: sizes(db)}
+        end
       end
     rescue
       e -> %{cut: cut, status: :error, reason: Exception.message(e)}
     after
       Exqlite.Sqlite3.close(conn)
     end
+  end
+
+  # Printed with every loss, because the first run of this probe reported losses
+  # it could not explain and the file sizes were the missing clue: a `.db` that is
+  # too small next to an emptied `-wal` means the checkpoint's pages never made it
+  # into the trace, which is a gap in the capture rather than a lost write.
+  defp sizes(db) do
+    [{"db", db}, {"wal", db <> "-wal"}]
+    |> Enum.map_join(" ", fn {label, path} ->
+      case File.stat(path) do
+        {:ok, %{size: size}} -> "#{label}=#{size}"
+        _ -> "#{label}=absent"
+      end
+    end)
   end
 
   defp integrity(conn) do
@@ -147,13 +163,30 @@ defmodule ReplayProbe do
 
   # A commit is identified by the row it wrote, so "did this survive" is a query
   # rather than an inference from the trace.
+  #
+  # "No such table" and "could not read the table" are separated deliberately.
+  # An earlier version rescued both to an empty list, which turned every failure
+  # to read into a report of lost data -- a harness bug wearing the costume of the
+  # exact finding this tier exists to produce. A missing table is a legitimate
+  # crash state; anything else is the harness failing and must say so.
   defp names(conn) do
-    {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, "SELECT name FROM patients")
-    {:ok, rows} = Exqlite.Sqlite3.fetch_all(conn, stmt)
-    {:ok, rows |> List.flatten() |> Enum.map(&commit_label/1)}
-  rescue
-    # No table yet -- the cut landed before the migration was durable. Valid.
-    _ -> {:ok, []}
+    case Exqlite.Sqlite3.prepare(conn, "SELECT name FROM patients") do
+      {:ok, stmt} ->
+        case Exqlite.Sqlite3.fetch_all(conn, stmt) do
+          {:ok, rows} -> {:ok, rows |> List.flatten() |> Enum.map(&commit_label/1)}
+          {:error, reason} -> %{status: :error, reason: "fetch_all: #{inspect(reason)}"}
+        end
+
+      {:error, reason} ->
+        message = to_string(inspect(reason))
+
+        if String.contains?(message, "no such table") do
+          # The cut landed before the migration was durable. A valid crash state.
+          {:ok, []}
+        else
+          %{status: :error, reason: "prepare: #{message}"}
+        end
+    end
   end
 
   defp commit_label("Patient " <> i), do: "commit-#{i}"
@@ -181,7 +214,15 @@ defmodule ReplayProbe do
 
       lost != [] ->
         IO.puts("FAIL -- commits that were acknowledged and barriered did not survive:")
-        Enum.each(Enum.take(lost, 5), &IO.puts("  cut #{&1.cut}: missing #{inspect(&1.missing)}"))
+
+        Enum.each(
+          Enum.take(lost, 5),
+          &IO.puts(
+            "  cut #{&1.cut}: missing #{inspect(&1.missing)}, " <>
+              "present #{inspect(&1.present)}, #{&1.sizes}"
+          )
+        )
+
         System.halt(1)
 
       ok == [] ->

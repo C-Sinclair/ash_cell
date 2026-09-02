@@ -5,7 +5,7 @@
 recorded that `synchronous` is already settable via repo config, and that `:normal`'s loss window
 is the WAL rather than the last commit. Added the cost probe and its macOS numbers, which show
 group commit amortising the fsync almost perfectly. The decision itself is still open: the Linux
-numbers are still owed, and tier 3 has not yet had a green run.
+numbers are still owed, and tier 3 has not yet had a meaningful green run — its first one was false, see below.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
 **Relates to:** [ADR-11](ADR-11-simulate-the-protocol-only.md) · [ADR-12](ADR-12-whole-file-snapshots-on-a-schedule.md) · [ADR-13](ADR-13-pool-size-one-and-cache.md) · [ADR-19](ADR-19-the-cell-cut-is-a-choice.md) · `demos/ledger/docs/design.md`
@@ -195,6 +195,38 @@ variance reached **20x**: two consecutive runs put `:normal` at batch 1 at 123 m
 median reported that as a result. The probe now reports min and spread, and the floor, so a gap
 narrower than the noise is visible as one. A probe that hides its variance is worse than no probe,
 and this one nearly shipped a fabricated ordering of `:off` against `:normal`.
+
+### First run on a runner, and what it found
+
+Tier 1 **passes** on Linux, on all three configurations. The two seams that had been reasoned
+about rather than tested both hold: `LD_PRELOAD` does reach `beam.smp` through `mix`'s launcher
+chain, and `openat` interposition does catch the BEAM's file I/O. Under `:full`, all five commits
+record `4 wal writes / 1 wal sync / durable`. Tier 2 passes under `:normal` — 22 cut points, none
+unreadable, none lost.
+
+Everything else that run found was a defect in the harness, and all three are worth recording
+because they are the same defect wearing different clothes: **a test that cannot see something
+reports its absence as a finding.**
+
+- **Vectored writes were not interposed.** `writev`/`pwritev` were missing, so a checkpoint's
+  pages could be written without entering the trace. Tier 2 then replayed a `.db` that was
+  genuinely missing those pages, the WAL truncate that followed removed the only other copy, and
+  the probe reported 13 acknowledged commits as lost. A gap in the capture is indistinguishable
+  from data loss downstream of it.
+- **A failed read was reported as an empty table.** `names/1` rescued every error to `{:ok, []}`,
+  so "could not read this table" became "this table is empty" became "the write was lost". Now
+  only `no such table` — a legitimate crash state — maps to empty; anything else fails as a
+  harness error.
+- **Tier 3 reported a pass having verified nothing.** `replay-log` failed with
+  `Magic doesn't match` because the log device cannot be read while the dm target still holds it,
+  `--list-marks` returned nothing, the verification loop never executed, and the script printed
+  success. It now fails when it lists no boundaries or checks none, and removes the target before
+  replaying. This was strictly worse than having no tier 3: a green check that means nothing is
+  read as a guarantee.
+
+The workload half of tier 3 does work — a cell was created, written and closed on an
+ext4-on-dm-log-writes device, 20 commits acknowledged — so what remains is the replay, not the
+capture.
 
 ## Consequences
 
