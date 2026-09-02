@@ -88,7 +88,18 @@ defmodule ReplayProbe do
          :ok <- materialise(files, scratch),
          {:ok, db} <- locate_db(scratch) do
       expected = BarrierReplay.expected_commits(records, cut)
-      verify(db, cut, expected)
+
+      # A zero-byte file is a *valid* empty SQLite database, so integrity_check
+      # passes on it and the cut looks readable while containing nothing. That
+      # masked the real problem the first time: the reconstruction was producing
+      # empty files at late cuts and the probe reported it as lost data.
+      case File.stat!(db) do
+        %{size: 0} when expected != [] ->
+          %{cut: cut, status: :error, reason: "reconstructed a 0-byte database"}
+
+        _ ->
+          verify(db, cut, expected)
+      end
     else
       # No database file yet is a legitimate state: the cut lands before the cell
       # ever created one. It is not a pass or a failure, it is nothing to check.
@@ -192,6 +203,28 @@ defmodule ReplayProbe do
   defp commit_label("Patient " <> i), do: "commit-#{i}"
   defp commit_label(other), do: other
 
+  # The whole trace, indexed, printed only on failure. It is tens of records, and
+  # the alternative is guessing: the first two failures of this probe were both
+  # diagnosed from what the reconstruction produced rather than from the writes
+  # that produced it, and both guesses were wrong.
+  defp dump(records) do
+    IO.puts("\n  trace (index: op path offset length):")
+
+    records
+    |> Enum.with_index()
+    |> Enum.each(fn {r, i} ->
+      IO.puts(
+        "    #{String.pad_leading("#{i}", 3)}: #{r.op} #{Path.basename(r.path)} #{r.off} #{r.len}"
+      )
+    end)
+
+    IO.puts("")
+  end
+
+  defp records do
+    System.fetch_env!("SHIM_LOG") |> File.read!() |> BarrierTrace.parse()
+  end
+
   defp report(results, level) do
     by_status = Enum.group_by(results, & &1.status)
     corrupt = Map.get(by_status, :corrupt, []) ++ Map.get(by_status, :error, [])
@@ -208,11 +241,13 @@ defmodule ReplayProbe do
 
     cond do
       corrupt != [] ->
+        dump(records())
         IO.puts("FAIL -- a crash left an unreadable database. This is corruption, not staleness:")
         Enum.each(Enum.take(corrupt, 5), &IO.puts("  cut #{&1.cut}: #{inspect(&1[:reason])}"))
         System.halt(1)
 
       lost != [] ->
+        dump(records())
         IO.puts("FAIL -- commits that were acknowledged and barriered did not survive:")
 
         Enum.each(

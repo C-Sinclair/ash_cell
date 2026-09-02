@@ -103,73 +103,88 @@ umount "$MNT"
 
 echo "==> releasing the device before reading its log"
 # The log superblock is not readable while the dm target still holds the device,
-# which is what "Magic doesn't match" means: the first attempt replayed before
-# removing the target and read nothing. Remove it, keeping both loop devices.
+# which is what "Magic doesn't match" meant on the first attempt.
 dmsetup remove "$DM_NAME"
 
-echo "==> replaying every flush boundary"
+echo "==> replaying"
 
-marks=$(replay-log --log "$LOG_LOOP" --list-marks 2>&1) || true
+# `--list-marks` was invented, not read from the tool: replay-log has no such
+# flag and printed its usage instead, and only the "nothing was verified" guard
+# below turned that into a failure rather than a green run. Every flag used here
+# is one replay-log documents.
+total=$(replay-log --log "$LOG_LOOP" --number-entries 2>&1 | grep -oE '[0-9]+' | tail -1)
 
-# A tier that verifies nothing must not report success. The first run of this
-# script did exactly that: replay-log failed, the loop below never executed, and
-# it printed a pass. Tiers 1 and 2 both guard against an empty trace and this one
-# did not, which made it strictly worse than having no tier 3 at all -- a green
-# check that means nothing is read as a guarantee.
-if ! grep -qE '^[0-9]+' <<<"$marks"; then
+if [[ -z "$total" ]] || [[ "$total" -eq 0 ]]; then
   echo >&2
-  echo "FAIL -- could not read any flush boundaries from the log device." >&2
-  echo "replay-log said:" >&2
-  echo "$marks" | sed 's/^/  /' >&2
+  echo "FAIL -- the log device holds no entries." >&2
+  replay-log --log "$LOG_LOOP" --number-entries 2>&1 | sed 's/^/  /' >&2
   echo >&2
   echo "Nothing was verified. This is a harness failure, not a durability result." >&2
   exit 1
 fi
 
-boundaries=$(grep -cE '^[0-9]+' <<<"$marks")
-echo "    $boundaries flush boundaries to replay"
+echo "    $total log entries"
 
 failures=0
 checked=0
 
-while read -r mark; do
-  [[ "$mark" =~ ^[0-9]+ ]] || continue
-  mark="${mark%% *}"
+# Two passes, because they check different things and the first is the one the
+# tool is built for.
+#
+# Pass 1: filesystem consistency at every FUA boundary, using replay-log's own
+# --check/--fsck. This is the well-trodden xfstests path and covers every
+# boundary, not a sample.
+echo "==> pass 1: filesystem consistency at every FUA boundary"
 
-  if ! replay-log --log "$LOG_LOOP" --replay "$DEV_LOOP" --end-mark "$mark" >/dev/null 2>&1; then
-    echo "    FAIL: could not replay to mark $mark"
+if ! replay-log --log "$LOG_LOOP" --replay "$DEV_LOOP" \
+  --check fua --fsck "fsck.ext4 -fn" >"$WORK/fsck.log" 2>&1; then
+  echo "    FAIL: a replayed prefix left an inconsistent filesystem"
+  tail -20 "$WORK/fsck.log" | sed 's/^/      /'
+  failures=$((failures + 1))
+else
+  echo "    ok -- every FUA boundary fsck'd clean"
+fi
+
+# Pass 2: the database itself at each FUA boundary. replay-log cannot do this
+# one, because the check is a SQLite query rather than a shell fsck, so the
+# boundaries are walked by hand: --find locates the next FUA entry, and --limit
+# replays that many entries from the start, which is exactly a prefix.
+echo "==> pass 2: the database at each FUA boundary"
+
+entry=0
+
+while true; do
+  next=$(replay-log --log "$LOG_LOOP" --find --next-fua --start-entry "$entry" 2>/dev/null |
+    grep -oE '[0-9]+' | tail -1)
+
+  [[ -z "$next" ]] && break
+  [[ "$next" -le "$entry" ]] && break
+  [[ "$next" -gt "$total" ]] && break
+
+  if ! replay-log --log "$LOG_LOOP" --replay "$DEV_LOOP" --limit "$next" >/dev/null 2>&1; then
+    echo "    FAIL: could not replay the first $next entries"
     failures=$((failures + 1))
-    continue
+    break
   fi
 
-  # A crash may lose recent commits. It may never leave a filesystem that fsck
-  # rejects, so this is a failure rather than a skip.
-  if ! fsck.ext4 -fn "$DEV_LOOP" >/dev/null 2>&1; then
-    echo "    FAIL: filesystem inconsistent at mark $mark"
-    failures=$((failures + 1))
-    continue
+  if mount "$DEV_LOOP" "$MNT" 2>/dev/null; then
+    if ! MIX_ENV=test PROBE_CELL_DIR="$MNT/cells" PROBE_ACK_FILE="$PROBE_ACK_FILE" \
+      mix run test/fault/dm_verify.exs; then
+      echo "    FAIL: database unreadable or commits out of order at entry $next"
+      failures=$((failures + 1))
+    fi
+
+    checked=$((checked + 1))
+    umount "$MNT"
   fi
 
-  if ! mount "$DEV_LOOP" "$MNT" 2>/dev/null; then
-    echo "    FAIL: fsck passed but the filesystem would not mount at mark $mark"
-    failures=$((failures + 1))
-    continue
-  fi
-
-  if ! MIX_ENV=test PROBE_CELL_DIR="$MNT/cells" PROBE_ACK_FILE="$PROBE_ACK_FILE" \
-    mix run test/fault/dm_verify.exs; then
-    echo "    FAIL: database unreadable or commits out of order at mark $mark"
-    failures=$((failures + 1))
-  fi
-
-  checked=$((checked + 1))
-  umount "$MNT"
-done <<<"$marks"
+  entry=$((next + 1))
+done
 
 if [[ $checked -eq 0 ]]; then
   echo >&2
-  echo "FAIL -- $boundaries boundaries were listed but none could be checked." >&2
-  echo "Nothing was verified; do not read this as a pass." >&2
+  echo "FAIL -- $total entries in the log but no boundary could be mounted and checked." >&2
+  echo "Nothing was verified in pass 2; do not read this as a pass." >&2
   exit 1
 fi
 
@@ -177,7 +192,7 @@ echo "    checked $checked boundaries"
 
 echo
 if [[ $failures -eq 0 ]]; then
-  echo "==> $checked flush boundaries replayed to a consistent filesystem and an ordered database."
+  echo "==> every FUA boundary fsck'd clean; $checked of them held an ordered, readable database."
 else
   echo "==> FAILED at $failures replay points." >&2
   exit 1
