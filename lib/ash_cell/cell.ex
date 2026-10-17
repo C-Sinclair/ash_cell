@@ -74,6 +74,7 @@ defmodule AshCell.Cell do
          {:ok, repo_pid} <- repo.start_link(repo_opts),
          {:ok, version} <- migrate(repo, repo_pid, migrator) do
       now = System.monotonic_time(:millisecond)
+      AshCell.Registry.put_repo(cell_key, repo_pid)
 
       if policy.enabled? do
         Process.send_after(self(), :maybe_ship, AshCell.SnapshotPolicy.initial_delay(policy))
@@ -130,6 +131,7 @@ defmodule AshCell.Cell do
 
   @impl true
   def handle_call(:stop_repo, _from, state) do
+    if state.repo_pid, do: AshCell.Registry.drop_repo(state.cell_key, state.repo_pid)
     shutdown_repo(state.repo_pid)
 
     # Cleared so terminate/2 and any second call are no-ops rather than a call
@@ -251,6 +253,7 @@ defmodule AshCell.Cell do
     # `DynamicSupervisor.terminate_child/2` waits for this callback, so doing it
     # here closes the window for every orderly shutdown. A cell that crashes never
     # runs terminate, which is why `ensure_started/1` also checks.
+    if state.repo_pid, do: AshCell.Registry.drop_repo(state.cell_key, state.repo_pid)
     Registry.unregister(AshCell.Registry, state.cell_key)
   catch
     # Terminating is not a place to raise. If the registry is already gone -- fleet

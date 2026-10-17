@@ -16,7 +16,7 @@ defmodule AshCell.ProbeTest do
   use ExUnit.Case, async: false
 
   alias AshCell.Test.Patient
-  alias AshCell.TestRepo
+  alias AshCell.TestProbeRepo
 
   @moduletag :probe
 
@@ -27,9 +27,9 @@ defmodule AshCell.ProbeTest do
     tenants =
       for name <- [:acme, :globex], into: %{} do
         path = Path.join(dir, "#{name}.db")
-        {:ok, pid} = TestRepo.start_link(name: nil, database: path, pool_size: 1)
+        {:ok, pid} = TestProbeRepo.start_link(name: nil, database: path, pool_size: 1)
 
-        TestRepo.put_dynamic_repo(pid)
+        TestProbeRepo.put_dynamic_repo(pid)
 
         Ecto.Adapters.SQL.query!(pid, """
         CREATE TABLE IF NOT EXISTS patients (
@@ -41,7 +41,7 @@ defmodule AshCell.ProbeTest do
         {name, %{pid: pid, path: path}}
       end
 
-    TestRepo.put_dynamic_repo(nil)
+    TestProbeRepo.put_dynamic_repo(nil)
     on_exit(fn -> File.rm_rf!(dir) end)
 
     {:ok, tenants: tenants, dir: dir}
@@ -99,7 +99,7 @@ defmodule AshCell.ProbeTest do
 
         rows =
           Patient
-          |> Ash.Query.set_context(%{data_layer: %{repo: AshCell.TestRepo}})
+          |> Ash.Query.set_context(%{data_layer: %{repo: AshCell.TestProbeRepo}})
           |> Ash.read!()
           |> Enum.map(& &1.name)
 
@@ -138,13 +138,13 @@ defmodule AshCell.ProbeTest do
   end
 
   defp in_cell(%{pid: pid}, fun) do
-    previous = TestRepo.get_dynamic_repo()
-    TestRepo.put_dynamic_repo(pid)
+    previous = TestProbeRepo.get_dynamic_repo()
+    TestProbeRepo.put_dynamic_repo(pid)
 
     try do
       fun.()
     after
-      TestRepo.put_dynamic_repo(previous)
+      TestProbeRepo.put_dynamic_repo(previous)
     end
   end
 

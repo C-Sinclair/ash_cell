@@ -1,21 +1,11 @@
 defmodule AshCell.Test.TenantPatient do
   @moduledoc """
-  Resource declaring context multitenancy *without* `AshCell.Resource` — the shape a
-  caller gets from the fork alone, plus a binder named by hand.
+  Resource declaring context multitenancy *without* `AshCell.Resource`.
 
-  `tenant_binder` is explicit here and must stay that way. Since ash_sqlite `76866fc`
-  the option defaults to `AshSqlite.MultiTenancy.Binder` for any `strategy :context`
-  resource, and that layer is never started in this suite, so leaving it unset does
-  not fall back to "unbound" — it routes into a registry that does not exist and
-  fails with `unknown registry: AshCell.TestRepo.TenantRegistry`. Naming the binder on
-  resources that do not use the extension is what
-  [ADR-22](../../docs/decisions/ADR-22-where-the-tenancy-runtime-lives.md) chose over
-  adopting the fork's tenancy runtime, because that runtime evicts with no knowledge
-  of a lease or a pending shipment and would break
-  [ADR-09](../../docs/decisions/ADR-09-snapshot-before-releasing-the-lease.md) silently.
-
-  `AshCell.Test.BoundPatient` is the same resource with the extension, which sets the
-  same binder for you.
+  It needs nothing else to reach its cell: the binding is on the repo, which
+  `use AshCell.Repo` makes a tenant repo. `AshCell.Test.BoundPatient` is the same
+  resource with the extension, which adds a compile-time check and nothing at
+  runtime.
   """
   use Ash.Resource,
     domain: AshCell.Test.Domain,
@@ -24,7 +14,6 @@ defmodule AshCell.Test.TenantPatient do
   sqlite do
     table "tenant_patients"
     repo AshCell.TestRepo
-    tenant_binder AshCell.Binder
   end
 
   multitenancy do

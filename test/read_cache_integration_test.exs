@@ -5,7 +5,8 @@ defmodule AshCell.ReadCacheIntegrationTest do
   `AshCell.ReadCacheTest` pins the ordering rules in isolation; this checks the
   claim that makes them useful — that an ordinary Ash write invalidates the cache
   without the caller doing anything, including on the paths a caller cannot wrap:
-  an atomic update, a bulk write, and a transaction spanning several actions.
+  an atomic update, a bulk write, and a transaction spanning several actions,
+  whether `AshCell.transaction/2` opened it or the data layer did.
   """
   use ExUnit.Case, async: false
 
@@ -128,6 +129,61 @@ defmodule AshCell.ReadCacheIntegrationTest do
 
         :done
       end)
+
+    assert ReadCache.fetch(tenant, :names) == :miss
+    assert cached_names(tenant) == ["Ada", "Grace"]
+  end
+
+  test "a transaction Ash opens invalidates once it commits, not before", %{tenant: tenant} do
+    # The data layer's own transaction, not `AshCell.transaction/2`. Nothing of
+    # AshCell's runs after it: the write is opened when the data layer asks for the
+    # cell, and closed by the repo's query event for the COMMIT.
+    BoundPatient.create!("Ada", tenant: tenant)
+    assert cached_names(tenant) == ["Ada"]
+
+    {:ok, :done} =
+      Ash.transaction(
+        BoundPatient,
+        fn ->
+          BoundPatient.create!("Grace", tenant: tenant)
+
+          epoch = ReadCache.epoch(tenant)
+          assert ReadCache.publish(tenant, :names, ["Ada", "Grace"], epoch) == :stale
+
+          :done
+        end,
+        tenant: tenant
+      )
+
+    assert ReadCache.fetch(tenant, :names) == :miss
+    assert cached_names(tenant) == ["Ada", "Grace"]
+    assert ReadCache.fetch(tenant, :names) == {:ok, ["Ada", "Grace"]}
+  end
+
+  test "a failed action leaves the cache publishable afterwards", %{tenant: tenant} do
+    # The write opened for the action's transaction is closed by its ROLLBACK. If
+    # it were left open, every later publish for the cell would be refused and the
+    # cache would never fill again.
+    BoundPatient.create!("Ada", tenant: tenant)
+    assert cached_names(tenant) == ["Ada"]
+
+    assert {:error, _} = BoundPatient.create_then_fail("Grace", tenant: tenant)
+
+    assert ReadCache.fetch(tenant, :names) == :miss
+    assert cached_names(tenant) == ["Ada"]
+    assert ReadCache.fetch(tenant, :names) == {:ok, ["Ada"]}
+  end
+
+  test "a raw write on the bound cell invalidates it", %{tenant: tenant} do
+    BoundPatient.create!("Ada", tenant: tenant)
+    assert cached_names(tenant) == ["Ada"]
+
+    AshCell.with_tenant(tenant, fn ->
+      AshCell.TestRepo.query!("INSERT INTO tenant_patients (id, name) VALUES (?, ?)", [
+        Ecto.UUID.generate(),
+        "Grace"
+      ])
+    end)
 
     assert ReadCache.fetch(tenant, :names) == :miss
     assert cached_names(tenant) == ["Ada", "Grace"]

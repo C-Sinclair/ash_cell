@@ -35,7 +35,10 @@ defmodule AshCell do
   `assert_bound!/0` exists to make that a loud failure rather than a quiet one.
   """
 
-  @cell_key {__MODULE__, :bound_cell}
+  # The cell an explicit bind counted, so `restore/1` releases the count it took.
+  # Not what `bound_cell/0` answers with: the data layer binds a cell for each
+  # statement without telling AshCell, so that is read off Ecto's binding instead.
+  @counted_cell {__MODULE__, :counted_cell}
 
   @doc false
   def child_spec(opts) do
@@ -64,34 +67,48 @@ defmodule AshCell do
   @spec bind_cell(term()) :: {:ok, term()} | {:error, term()}
   def bind_cell(cell_key), do: bind_key(cell_key, 1)
 
-  # A cell can die between being looked up and being asked for its repo pid --
-  # evicted for inactivity, closed by a drain, or restarted after a crash. The
-  # window is small and entirely normal, so a caller should not see an exit from
-  # a GenServer it never knew about: resolve again and try once more.
   defp bind_key(cell_key, attempts_left) do
-    with :ok <- await_not_closing(cell_key),
-         {:ok, cell} <- AshCell.Manager.ensure_started(cell_key),
-         {:ok, repo_pid} <- fetch_repo_pid(cell),
+    with {:ok, repo_pid} <- repo_for_cell(cell_key, attempts_left),
          :ok <- AshCell.Registry.bound(cell_key) do
       repo = repo()
-      previous = {repo.get_dynamic_repo(), Process.get(@cell_key)}
+      previous = {repo.get_dynamic_repo(), Process.get(@counted_cell)}
 
       repo.put_dynamic_repo(repo_pid)
-      Process.put(@cell_key, cell_key)
-      AshCell.Cell.note_query(cell)
+      Process.put(@counted_cell, cell_key)
 
       {:ok, previous}
     else
-      # The cell began closing between the check and the count. Undo and retry
-      # against whatever replaces it.
+      # The cell began closing between the check and the count. Retry against
+      # whatever replaces it.
       :closing when attempts_left > 0 ->
         bind_key(cell_key, attempts_left - 1)
 
       :closing ->
         {:error, :cell_closing}
 
+      other ->
+        other
+    end
+  end
+
+  @doc false
+  # The repo instance of `cell_key`, starting the cell if it is not resident. What
+  # `AshCell.Binder` hands the data layer, which binds it for one statement itself.
+  def repo_for_cell(cell_key), do: repo_for_cell(cell_key, 1)
+
+  # A cell can die between being looked up and being asked for its repo pid --
+  # evicted for inactivity, closed by a drain, or restarted after a crash. The
+  # window is small and entirely normal, so a caller should not see an exit from
+  # a GenServer it never knew about: resolve again and try once more.
+  defp repo_for_cell(cell_key, attempts_left) do
+    with :ok <- await_not_closing(cell_key),
+         {:ok, cell} <- AshCell.Manager.ensure_started(cell_key),
+         {:ok, repo_pid} <- fetch_repo_pid(cell) do
+      AshCell.Cell.note_query(cell)
+      {:ok, repo_pid}
+    else
       {:error, :cell_died} when attempts_left > 0 ->
-        bind_key(cell_key, attempts_left - 1)
+        repo_for_cell(cell_key, attempts_left - 1)
 
       {:error, :cell_died} ->
         {:error, :cell_unavailable}
@@ -119,20 +136,20 @@ defmodule AshCell do
 
   @doc "Restores a binding returned by `bind/1`."
   @spec restore({term(), term()}) :: :ok
-  def restore({dynamic_repo, tenant}) do
+  def restore({dynamic_repo, counted}) do
     # Release the binding this process currently holds before adopting the
     # previous one, so a nested with_tenant/2 decrements the inner tenant rather
     # than leaking a count that would make it look permanently busy to a drain.
-    case Process.get(@cell_key) do
+    case Process.get(@counted_cell) do
       nil -> :ok
       current -> AshCell.Registry.unbound(current)
     end
 
     repo().put_dynamic_repo(dynamic_repo)
 
-    case tenant do
-      nil -> Process.delete(@cell_key)
-      other -> Process.put(@cell_key, other)
+    case counted do
+      nil -> Process.delete(@counted_cell)
+      other -> Process.put(@counted_cell, other)
     end
 
     :ok
@@ -158,7 +175,6 @@ defmodule AshCell do
     with {:ok, cell} <- AshCell.Manager.ensure_started(cell_key) do
       repo = repo()
       repo.put_dynamic_repo(AshCell.Cell.repo_pid(cell))
-      Process.put(@cell_key, cell_key)
       AshCell.Holders.hold(cell_key)
       :ok
     end
@@ -168,7 +184,6 @@ defmodule AshCell do
   @spec release_held(term()) :: :ok
   def release_held(tenant) do
     AshCell.Holders.release(AshCell.CellKey.resolve(tenant))
-    Process.delete(@cell_key)
     repo().put_dynamic_repo(repo())
     :ok
   end
@@ -350,11 +365,19 @@ defmodule AshCell do
   tenant is not recoverable from here, and the cell key is the thing every caller
   actually wants to compare.
 
-  Read from the process dictionary rather than derived by searching the registry
-  for a matching pid, so it stays correct when a cell restarts and gets a new pid.
+  Derived from the repo instance Ecto has bound in this process, so it answers for
+  a binding the data layer made for one statement — inside an action's
+  transaction, say — as well as for one made by `with_tenant/2`. A binding to a
+  cell that has since stopped answers `nil`: its instance is gone, and so is any
+  statement that would have run on it.
   """
   @spec bound_cell() :: term() | nil
-  def bound_cell, do: Process.get(@cell_key)
+  def bound_cell do
+    case repo().get_dynamic_repo() do
+      pid when is_pid(pid) -> AshCell.Registry.cell_for_repo(pid)
+      _unbound -> nil
+    end
+  end
 
   @doc """
   Raises unless this process is bound to a tenant.

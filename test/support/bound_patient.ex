@@ -36,6 +36,37 @@ defmodule AshCell.Test.BoundPatient do
              end)
     end
 
+    # Two inserts in one action, the second from an after_action hook, so both are
+    # inside the transaction Ash opens for the action. `fail?` fails it after both.
+    # The hook reports what it saw, because what is bound *inside* the transaction
+    # is the thing under test.
+    create :create_pair do
+      accept [:name]
+      argument :fail?, :boolean, default: false
+      argument :report_to, :term
+
+      change after_action(fn changeset, record, _context ->
+               send(
+                 Ash.Changeset.get_argument(changeset, :report_to),
+                 {:inside, AshCell.bound_cell(), AshCell.in_transaction?()}
+               )
+
+               Ash.create!(AshCell.Test.BoundPatient, %{name: record.name <> " pair"},
+                 tenant: changeset.tenant
+               )
+
+               if Ash.Changeset.get_argument(changeset, :fail?) do
+                 {:error,
+                  Ash.Error.Changes.InvalidAttribute.exception(
+                    field: :name,
+                    message: "deliberate"
+                  )}
+               else
+                 {:ok, record}
+               end
+             end)
+    end
+
     update :rename do
       require_atomic? true
       accept [:name]

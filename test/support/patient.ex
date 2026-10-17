@@ -1,12 +1,17 @@
 defmodule AshCell.Test.Patient do
-  @moduledoc "Probe resource. Deliberately plain: no aggregates, no transactions."
+  @moduledoc """
+  Probe resource. Deliberately plain: no aggregates, no transactions, no tenancy.
+
+  On `AshCell.TestProbeRepo` rather than the cells' repo, because a tenant repo
+  only serves `strategy :context` resources.
+  """
   use Ash.Resource,
     domain: AshCell.Test.Domain,
     data_layer: AshSqlite.DataLayer
 
   sqlite do
     table "patients"
-    repo AshCell.TestRepo
+    repo AshCell.TestProbeRepo
   end
 
   attributes do

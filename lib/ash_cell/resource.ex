@@ -1,6 +1,6 @@
 defmodule AshCell.Resource do
   @moduledoc """
-  Makes a tenanted resource bind its own cell, so callers never write `with_tenant/2`.
+  Marks a resource as living in a cell, and refuses it at compile time unless it can.
 
       use Ash.Resource,
         domain: MyApp.Clinical,
@@ -16,7 +16,8 @@ defmodule AshCell.Resource do
         strategy :context
       end
 
-  With that, an ordinary Ash call is enough, from anywhere:
+  With `MyApp.CellRepo` defined by `use AshCell.Repo`, an ordinary Ash call is
+  enough, from anywhere, and no caller writes `with_tenant/2`:
 
       Ash.read!(MyApp.Patient, tenant: "acme")
       Ash.count!(MyApp.Patient, tenant: "acme")
@@ -24,20 +25,18 @@ defmodule AshCell.Resource do
 
   ## What it actually does
 
-  Three things, all in the resource's `sqlite` section or its `changes`:
+  Very little, because the binding moved onto the repo. `use AshCell.Repo` makes
+  the repo module answer `c:AshSqlite.Repo.tenant_repo/2`, and that is how the data
+  layer learns which connection a tenanted statement runs on — once per statement,
+  in the process about to issue it. The same module turns transactions on with
+  `c:AshSqlite.Repo.write_transactions?/0`, so Ash wraps multi-step actions in a
+  transaction instead of leaving a failed one half-applied. Ash passes the tenant
+  to the data layer's `transaction/4` itself, so nothing has to carry it there.
 
-    * sets `tenant_binder AshCell.Binder`, which is how the data layer learns which
-      connection a tenanted statement runs on — once per statement, in the process
-      about to issue it
-    * sets `write_transactions? true`, so Ash wraps multi-step actions in a transaction
-      instead of leaving a failed one half-applied
-    * adds `AshCell.Resource.Changes.CarryTenant`, because the one callback that
-      opens the transaction runs above the data layer and so cannot read the tenant
-      off a changeset the way every other callback does
-
-  Setting `tenant_binder` or `write_transactions?` yourself wins — the transformer only
-  fills in defaults. `write_transactions? false` gets you the old behaviour, where a
-  multi-step action was never atomic.
+  What is left for the extension is a compile-time check: `strategy :context`,
+  with a message that says why a cell needs it. AshSqlite refuses the same resource
+  too, because a tenant repo only serves context resources, but its message is
+  about repos rather than cells.
 
   A transaction cannot span two cells: they are separate files on separate
   connections, and SQLite cannot commit across database files atomically in WAL
@@ -70,8 +69,8 @@ defmodule AshCell.Resource do
   at that point the tenant is in hand — in `query.__ash_bindings__.context` for
   reads and aggregates, on the changeset for writes.
 
-  So the binding now happens there, and this extension is thin. Atomic writes are
-  back to Ash's default, aggregates work, and `Ash.read!/2` needs no ceremony.
+  So the binding happens there, and this extension is thin. Atomic writes are on
+  Ash's default path, aggregates work, and `Ash.read!/2` needs no ceremony.
 
   ## What this does not replace
 
@@ -87,23 +86,22 @@ defmodule AshCell.Resource do
 
   A shared table is a plain `AshSqlite.DataLayer` resource, not this extension:
   `strategy :context` is required here, because the tenant is how a cell is found.
-  Transactions still work — `write_transactions? true` in the `sqlite` section is enough
-  on its own, with nothing to bind.
+  Transactions still work — a repo whose `write_transactions?/0` returns `true` is
+  enough on its own, with nothing to bind.
 
-  **Give it its own repo module.** Ecto keys the dynamic binding as
-  `{repo_module, :dynamic_repo}`, so binding a cell affects exactly one module. A
-  non-tenanted resource on a *different* repo module is immune to cell bindings by
-  construction. One that shares the cells' repo module inherits whatever the
-  process happens to have bound, and its rows land in that tenant's database —
-  silently, because nothing in the stack can tell that a shared row was meant to be
-  shared. Both behaviours are pinned down in `test/non_tenanted_test.exs`.
+  **It needs its own repo module, and AshSqlite enforces that.** Ecto keys the
+  dynamic binding as `{repo_module, :dynamic_repo}`, so binding a cell affects
+  exactly one module. A resource on a *different* repo module is immune to cell
+  bindings by construction. One that shared the cells' repo module would inherit
+  whatever the process happened to have bound, and its rows would land in that
+  tenant's database — so AshSqlite refuses to compile a resource without
+  `strategy :context` on a tenant repo. Both are pinned down in
+  `test/non_tenanted_test.exs`.
 
   A transaction still cannot span the two, for the same reason it cannot span two
   cells: separate repos are separate connections, so a cell transaction and a
   shared-table transaction commit independently.
   """
 
-  use Spark.Dsl.Extension,
-    transformers: [AshCell.Resource.Transformers.BindTenant],
-    verifiers: [AshCell.Resource.Verifiers.VerifyMultitenancy]
+  use Spark.Dsl.Extension, verifiers: [AshCell.Resource.Verifiers.VerifyMultitenancy]
 end

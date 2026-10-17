@@ -2,10 +2,9 @@ defmodule AshCell.Resource.Verifiers.VerifyMultitenancy do
   @moduledoc """
   Refuses a resource that cannot be tenanted, at compile time.
 
-  Without `strategy :context` Ash never populates a tenant, so the hooks this
-  extension installs would find nothing to bind and every action would quietly run
-  against the default repo. A resource that shares one database is a legitimate
-  thing to have — it just should not claim to be a cell.
+  Without `strategy :context` Ash never populates a tenant, so there would be
+  nothing to resolve a cell from. A resource that shares one database is a
+  legitimate thing to have — it just should not claim to be a cell.
   """
 
   use Spark.Dsl.Verifier

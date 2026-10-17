@@ -25,13 +25,52 @@ defmodule AshCell.TransactionTest do
     :ok
   end
 
-  describe "what the extension turns on" do
-    test "a resource with AshCell.Resource can transact" do
+  describe "what the cell repo turns on" do
+    test "a resource on it can transact, with or without AshCell.Resource" do
+      # Transactions are a repo decision upstream, so the extension no longer has
+      # a say in it.
       assert Ash.DataLayer.data_layer_can?(BoundPatient, :transact)
+      assert Ash.DataLayer.data_layer_can?(TenantPatient, :transact)
     end
 
-    test "a plain AshSqlite resource still cannot, so nothing changes upstream" do
-      refute Ash.DataLayer.data_layer_can?(TenantPatient, :transact)
+    test "a resource on a plain AshSqlite repo still cannot, so nothing changes upstream" do
+      refute Ash.DataLayer.data_layer_can?(AshCell.Test.Patient, :transact)
+    end
+  end
+
+  describe "the transaction Ash opens for an action" do
+    # `AshCell.Resource.Changes.CarryTenant` used to copy the tenant into the
+    # changeset context, because Ash did not pass it to `transaction/4`. Ash now
+    # does, and the change is gone. These pin down that nothing was lost with it.
+    test "is opened on the action's own cell" do
+      {:ok, _} = BoundPatient.create("Globex Row", tenant: "globex")
+
+      assert {:ok, _} =
+               BoundPatient
+               |> Ash.Changeset.for_create(:create_pair, %{name: "Ada", report_to: self()},
+                 tenant: "acme"
+               )
+               |> Ash.create()
+
+      assert_received {:inside, "acme", true}
+
+      assert {:ok, rows} = BoundPatient.read(tenant: "acme")
+      assert rows |> Enum.map(& &1.name) |> Enum.sort() == ["Ada", "Ada pair"]
+      assert {:ok, [%{name: "Globex Row"}]} = BoundPatient.read(tenant: "globex")
+    end
+
+    test "rolls back every statement in it when the action fails" do
+      assert {:error, _} =
+               BoundPatient
+               |> Ash.Changeset.for_create(
+                 :create_pair,
+                 %{name: "Ada", fail?: true, report_to: self()},
+                 tenant: "acme"
+               )
+               |> Ash.create()
+
+      assert_received {:inside, "acme", true}
+      assert {:ok, []} = BoundPatient.read(tenant: "acme")
     end
   end
 

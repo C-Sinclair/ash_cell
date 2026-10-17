@@ -78,6 +78,16 @@ defmodule AshCell.ContextTest do
       assert "acme" == AshCell.with_tenant("acme", fn -> AshCell.assert_bound!() end)
     end
 
+    test "a binding to a cell that has since closed reports no cell" do
+      # Read off the bound repo instance, so a binding whose instance has stopped
+      # names nothing rather than a cell its next statement cannot reach.
+      assert nil ==
+               AshCell.with_tenant("acme", fn ->
+                 AshCell.Manager.close("acme", force: true)
+                 AshCell.bound_cell()
+               end)
+    end
+
     test "bound_cell survives a cell restart under the same binding call" do
       assert "acme" = AshCell.with_tenant("acme", fn -> AshCell.bound_cell() end)
       assert nil == AshCell.bound_cell()

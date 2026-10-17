@@ -91,6 +91,73 @@ defmodule AshCell.DrainTest do
       end)
     end
 
+    test "a transaction the data layer opened counts, though nothing bound the cell" do
+      # No with_tenant/2 here: the data layer binds and restores the cell's repo
+      # itself, and AshCell never hears that the statement ended. The count comes
+      # from the cell's connection pool instead, which is checked out from BEGIN to
+      # COMMIT.
+      write("acme", "Row")
+      parent = self()
+
+      holder =
+        spawn(fn ->
+          Ash.transaction(
+            TenantPatient,
+            fn ->
+              send(parent, :in_transaction)
+              receive do: (:release -> :ok)
+            end,
+            tenant: "acme"
+          )
+
+          send(parent, :committed)
+        end)
+
+      assert_receive :in_transaction, 2_000
+      assert AshCell.Registry.active_binds("acme") == 1
+      assert AshCell.Registry.transient_binds("acme") == 0
+      refute AshCell.Drain.await_quiescence("acme", 150)
+
+      send(holder, :release)
+      assert_receive :committed, 2_000
+      assert AshCell.Drain.await_quiescence("acme", 1_000)
+    end
+
+    test "a statement queued behind the open transaction counts too" do
+      write("acme", "Row")
+      parent = self()
+
+      holder =
+        spawn(fn ->
+          Ash.transaction(
+            TenantPatient,
+            fn ->
+              send(parent, :in_transaction)
+              receive do: (:release -> :ok)
+            end,
+            tenant: "acme"
+          )
+        end)
+
+      assert_receive :in_transaction, 2_000
+      spawn(fn -> send(parent, {:read, Ash.read!(TenantPatient, tenant: "acme")}) end)
+
+      wait_until(fn -> AshCell.Registry.active_binds("acme") == 2 end)
+
+      send(holder, :release)
+      assert_receive {:read, [_]}, 2_000
+      wait_until(fn -> AshCell.Registry.active_binds("acme") == 0 end)
+    end
+
+    test "statements leave nothing counted once they finish" do
+      write("acme", "Row")
+      _ = Ash.read!(TenantPatient, tenant: "acme")
+      _ = Ash.count!(TenantPatient, tenant: "acme")
+      {:ok, _} = TenantPatient.create("Another", tenant: "acme")
+
+      assert AshCell.Registry.active_binds("acme") == 0
+    end
+
     test "a stray unbind cannot drive the count negative" do
       # A negative count reads as quiescent, which would let a drain proceed
       # straight over live work.

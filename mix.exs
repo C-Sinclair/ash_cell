@@ -90,12 +90,11 @@ defmodule AshCell.MixProject do
 
   defp deps do
     [
-      {:ash, "~> 3.31"},
-      # A fork, not a preference: upstream cannot express database-per-tenant.
-      # See the Requirements section of the README. Resolved from the sibling
-      # checkout when there is one, so edits there are picked up on the next
-      # compile, and from git otherwise, so a standalone clone builds.
-      {:ash_sqlite, ash_sqlite_dep()},
+      {:ash, "~> 3.33 and >= 3.33.2"},
+      # Pinned to a ref, not a branch: `c:AshSqlite.Repo.tenant_repo/2` is on upstream
+      # main and not yet in a release. Bump deliberately.
+      {:ash_sqlite,
+       github: "ash-project/ash_sqlite", ref: "d200a69d662ed5acd45a69f97196f91f081d2d2c"},
       {:ecto_sqlite3, "~> 0.12"},
       {:ecto_sql, "~> 3.13"},
       {:jason, "~> 1.0"},
@@ -107,22 +106,6 @@ defmodule AshCell.MixProject do
       {:dialyxir, ">= 0.0.0", only: [:dev, :test], runtime: false},
       {:ex_doc, ">= 0.0.0", only: [:dev, :test], runtime: false}
     ]
-  end
-
-  defp ash_sqlite_dep do
-    if File.dir?("../ash_sqlite") do
-      [path: "../ash_sqlite", override: true]
-    else
-      # Pinned to a ref, not a branch. CI has no sibling checkout, so this is what
-      # it builds against, and tracking the fork's default branch meant a push
-      # there could turn this repo's CI red with no commit here to explain it.
-      # Bump deliberately when the fork gains something this repo needs.
-      [
-        github: "C-Sinclair/ash_sqlite",
-        ref: "3defa128fcdbc5b6bea71dcbf3d3c1e3e317d501",
-        override: true
-      ]
-    end
   end
 
   defp aliases do

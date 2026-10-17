@@ -29,11 +29,19 @@ defmodule AshCell.ReadCache do
 
   ## What guarantees the value is not stale
 
-  Writes bracket themselves. `begin_write/1` erases the cell's entries and bumps its
+  Writes are bracketed. `begin_write/1` erases the cell's entries and bumps its
   epoch before the statement runs; `end_write/2` bumps again *after* the commit. Both
   bumps matter and the second one is the subtle one: without it a reader could
   compute a projection from the pre-commit state, publish it while the write was
   still open, and leave that value in place after the commit landed.
+
+  The data layer gives AshCell a call before a write and nothing after it, so the
+  two halves come from different places. `AshCell.Binder` opens the write with
+  `open_write/1` when the data layer asks for a cell to write to.
+  `handle_query/4`, attached to the cell repo's `[..., :query]` telemetry event,
+  closes it once the statement has run, or once its transaction's `COMMIT` or
+  `ROLLBACK` has. The event fires in the writer's own process, after the commit is
+  visible to other connections, and before the write returns to its caller.
 
   While a write is in flight, `publish/4` is refused outright. So a projection can
   only ever be published from a snapshot with no write open across it.
@@ -49,10 +57,15 @@ defmodule AshCell.ReadCache do
 
   ## What this does not cover
 
-  Writes that do not go through the data layer. `AshCell.with_tenant/2` with raw
-  Ecto, a `checkpoint/1`, a restore from a snapshot: none of those are statements
-  this module sees, so they must call `invalidate/1` themselves. This is the same
-  boundary `AshCell.Binder` has, for the same reason.
+  Writes that do not run on the instance the process has bound. The query event
+  carries the repo module but not the instance, so the cell is read off the
+  process's Ecto binding. A raw statement inside `AshCell.with_tenant/2` is covered
+  that way; `Ecto.Adapters.SQL.query!/3` against a repo pid nobody bound, or a
+  restore that rewrites the file, is not, and must call `invalidate/1` itself.
+
+  Any statement that does not begin with `SELECT` is treated as a write. That
+  over-invalidates on a `PRAGMA` or a lowercase raw query, which costs a cache miss
+  and nothing else.
 
   This is a single node's cache. It says nothing about a replica on another node —
   see the `:replicated` and `:leased` strategies in `AshCell.ReadStrategy`.
@@ -65,8 +78,14 @@ defmodule AshCell.ReadCache do
   @type name :: term()
   @type token :: {reference(), non_neg_integer()}
 
-  defstruct epochs: %{}, writers: %{}
+  @open_write {__MODULE__, :open_write}
 
+  defstruct [:repo, epochs: %{}, writers: %{}]
+
+  @doc """
+  Starts the cache. Pass `repo:`, the cells' repo module, to have the data layer's
+  writes invalidate it; without one only explicit brackets do.
+  """
   def start_link(opts \\ []), do: GenServer.start_link(__MODULE__, opts, name: __MODULE__)
 
   @doc """
@@ -154,7 +173,7 @@ defmodule AshCell.ReadCache do
   @doc """
   Runs `fun` with a write open on this cell.
 
-  The bracket, which is what `AshCell.Binder` uses. Invalidates before and after,
+  The bracket, which is what `AshCell.transaction/2` uses. Invalidates before and after,
   including when `fun` raises: a raise from a write is not proof the write did not
   land, so the cache has to assume it did.
   """
@@ -169,11 +188,113 @@ defmodule AshCell.ReadCache do
     end
   end
 
+  @doc """
+  Opens a write on `cell_key` for the calling process, unless one is already open.
+
+  `AshCell.Binder` calls this before every write the data layer issues and before it
+  opens a transaction. There is no matching call to close it: `handle_query/4` does
+  that once the statement, or the transaction's `COMMIT`, has run. A process that
+  dies with a write open is cleaned up by the monitor `begin_write/1` takes.
+  """
+  @spec open_write(cell_key()) :: :ok
+  def open_write(cell_key) do
+    case Process.get(@open_write) do
+      {^cell_key, _token} ->
+        :ok
+
+      open ->
+        close_write(open)
+        Process.put(@open_write, {cell_key, begin_write(cell_key)})
+        :ok
+    end
+  end
+
+  defp close_write(nil), do: :ok
+
+  defp close_write({cell_key, token}) do
+    Process.delete(@open_write)
+    end_write(cell_key, token)
+  end
+
+  @doc false
+  # The handler for the cells' repo `[..., :query]` event. It runs in the process
+  # that issued the statement, with that statement's instance still bound, and it
+  # runs for reads too -- so a read with no write open returns before anything is
+  # looked up.
+  def handle_query(_event, _measurements, %{query: query, repo: repo}, _config) do
+    open = Process.get(@open_write)
+
+    unless is_nil(open) and read?(query) do
+      settle(repo, query, open)
+    end
+
+    :ok
+  catch
+    # Telemetry detaches a handler that raises, for good, and every later write
+    # would then invalidate nothing. Logging keeps it attached.
+    kind, reason ->
+      Logger.error(
+        "AshCell.ReadCache could not settle a write: #{Exception.format(kind, reason)}"
+      )
+  end
+
+  # A `begin`, and every statement inside a transaction, leave the write open: the
+  # COMMIT that ends it has not run yet.
+  defp settle(_repo, "begin", _open), do: :ok
+
+  defp settle(repo, query, open) do
+    with bound when is_pid(bound) <- repo.get_dynamic_repo(),
+         true <- query in ["commit", "rollback"] or not repo.in_transaction?() do
+      close_write(open)
+      cell_key = AshCell.Registry.cell_for_repo(bound)
+
+      # A write that nothing opened, or one on another cell than the open write:
+      # a raw statement, or a later batch of a bulk write. Its statement has
+      # already run, so the erase after it is the one that still matters.
+      if cell_key && not read?(query) && not match?({^cell_key, _}, open) do
+        invalidate(cell_key)
+      end
+    end
+  end
+
+  defp read?("SELECT" <> _), do: true
+  defp read?(_query), do: false
+
   @doc false
   def entry(cell_key, name), do: {__MODULE__, cell_key, name}
 
   @impl true
-  def init(_opts), do: {:ok, %__MODULE__{}}
+  def init(opts) do
+    repo = Keyword.get(opts, :repo)
+
+    if repo do
+      # Detaches on the way down, which a supervisor only waits for when exits are
+      # trapped.
+      Process.flag(:trap_exit, true)
+      attach(repo)
+    end
+
+    {:ok, %__MODULE__{repo: repo}}
+  end
+
+  @impl true
+  def terminate(_reason, %{repo: nil}), do: :ok
+  def terminate(_reason, %{repo: repo}), do: :telemetry.detach({__MODULE__, repo})
+
+  # Detached first, because a previous instance that was killed rather than stopped
+  # leaves its handler behind, and attaching over it fails.
+  defp attach(repo) do
+    id = {__MODULE__, repo}
+    :telemetry.detach(id)
+
+    :ok =
+      :telemetry.attach(
+        id,
+        repo.config()[:telemetry_prefix] ++ [:query],
+        &__MODULE__.handle_query/4,
+        nil
+      )
+  end
 
   @impl true
   def handle_call({:epoch, cell_key}, _from, state) do

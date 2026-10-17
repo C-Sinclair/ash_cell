@@ -2,17 +2,23 @@ defmodule AshCell.Registry do
   @moduledoc """
   Maps a cell key to its resident cell process, and counts who is using it.
 
-  The bind count exists for draining. Queries never pass through the cell process
+  The counts exist for draining. Queries never pass through the cell process
   — they go straight to the repo instance — so a cell has no way to know whether
   anyone is mid-query. Without a count, a graceful shutdown is indistinguishable
   from a kill.
 
-  It is an ETS counter rather than process state because it sits on the hot path:
-  every `AshCell.bind/1` touches it, and a `GenServer.call` per bind would put a
-  single process in front of every tenanted query in the system.
+  Statements issued by the data layer are counted by the cell's connection pool,
+  which is the one place that sees each of them start and finish. Explicit binds
+  from `AshCell.with_tenant/2` are counted here, in an ETS counter rather than
+  process state, because a `GenServer.call` per bind would put a single process in
+  front of every one.
+
+  It also maps a cell's repo instance back to its cell key, which is how
+  `AshCell.bound_cell/0` answers from the process's Ecto binding alone.
   """
 
   @binds __MODULE__.Binds
+  @repos __MODULE__.Repos
 
   def child_spec(_) do
     %{
@@ -22,11 +28,41 @@ defmodule AshCell.Registry do
     }
   end
 
+  @doc false
+  def repos_child_spec, do: Registry.child_spec(keys: :unique, name: @repos)
+
   def start_link do
     # Public and write-concurrent: bind/unbind run from arbitrary caller
     # processes, not from one owner.
     :ets.new(@binds, [:named_table, :public, :set, write_concurrency: true])
     Registry.start_link(keys: :unique, name: __MODULE__)
+  end
+
+  @doc """
+  Records `repo_pid` as the repo instance of `cell_key`. Called by the cell itself.
+
+  Registered by the cell process, so both directions disappear when the cell dies
+  without anything having to clean up after a crash.
+  """
+  def put_repo(cell_key, repo_pid) do
+    {_, _} = Registry.update_value(__MODULE__, cell_key, fn _ -> repo_pid end)
+    {:ok, _} = Registry.register(@repos, repo_pid, cell_key)
+    :ok
+  end
+
+  @doc "Forgets the repo instance of `cell_key`, once the cell has stopped it."
+  def drop_repo(cell_key, repo_pid) do
+    Registry.update_value(__MODULE__, cell_key, fn _ -> nil end)
+    Registry.unregister(@repos, repo_pid)
+    :ok
+  end
+
+  @doc "The cell key whose repo instance is `repo_pid`, or `nil`."
+  def cell_for_repo(repo_pid) do
+    case Registry.lookup(@repos, repo_pid) do
+      [{_cell, cell_key}] -> cell_key
+      [] -> nil
+    end
   end
 
   def via(cell_key), do: {:via, Registry, {__MODULE__, cell_key}}
@@ -93,30 +129,54 @@ defmodule AshCell.Registry do
   end
 
   @doc """
-  How many processes are using `tenant` right now.
+  How much work is using `cell_key` right now.
 
-  Two populations, counted differently because they behave differently:
+  Three populations, counted differently because they behave differently:
 
     * **transient binds** from `AshCell.with_tenant/2` — bracketed, so a counter
       is exact and cheap
     * **holders** from `AshCell.bind_held/1` — long-lived processes like
       LiveViews, tracked by `AshCell.Holders` so that a closed browser tab cleans
       itself up
+    * **statements in flight** from the data layer — see `in_flight/1`
 
   A drain waits on the sum. Counting only the transient half would report a cell
   as idle between a user's keystrokes.
   """
   def active_binds(cell_key) do
-    transient =
-      case :ets.lookup(@binds, cell_key) do
-        [{^cell_key, count}] -> max(count, 0)
-        [] -> 0
-      end
-
-    transient + AshCell.Holders.count(cell_key)
+    transient_binds(cell_key) + AshCell.Holders.count(cell_key) + in_flight(cell_key)
   end
 
-  @doc "Transient bind count only, ignoring long-lived holders."
+  @doc """
+  Statements holding or waiting for `cell_key`'s connection.
+
+  Read from the connection pool rather than counted around each statement, because
+  the data layer binds and restores a cell's repo itself and nothing of AshCell's
+  runs after a statement finishes. A transaction holds the connection from its
+  `BEGIN` to its `COMMIT`, so it counts for its whole length.
+
+  It cannot see a statement whose cell has been resolved but which has not yet
+  asked the pool for the connection. `scripts/tenant_repo_probe.exs` measures that
+  window. A cell has `pool_size: 1`, which is what makes an idle pool mean zero.
+  """
+  def in_flight(cell_key) do
+    with [{_cell, repo_pid}] when is_pid(repo_pid) <- Registry.lookup(__MODULE__, cell_key),
+         %{pid: pool} <- Ecto.Adapter.lookup_meta(repo_pid) do
+      pool
+      |> DBConnection.get_connection_metrics()
+      |> Enum.sum_by(&(1 - &1.ready_conn_count + &1.checkout_queue_length))
+    else
+      _ -> 0
+    end
+  rescue
+    # The repo stopped between the lookup and the question. Nothing can be using
+    # a connection that no longer exists.
+    RuntimeError -> 0
+  catch
+    :exit, _ -> 0
+  end
+
+  @doc "Transient bind count only, ignoring long-lived holders and statements."
   def transient_binds(cell_key) do
     case :ets.lookup(@binds, cell_key) do
       [{^cell_key, count}] -> max(count, 0)
@@ -124,7 +184,7 @@ defmodule AshCell.Registry do
     end
   end
 
-  @doc "Bind counts for every cell with outstanding work."
+  @doc "Transient bind counts for every cell with outstanding explicit binds."
   def active_fleet do
     @binds
     |> :ets.tab2list()

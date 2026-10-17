@@ -10,12 +10,19 @@ defmodule AshCell.NonTenantedTest do
   It does not leak, and the reason is narrow enough to be worth stating. Ecto keys
   the dynamic binding as `{repo_module, :dynamic_repo}`, so binding a cell affects
   one module only. A non-tenanted resource on its *own* repo module is immune by
-  construction; one sharing the cells' module is not, which is why they should not
-  share it.
+  construction. One sharing the cells' module used to inherit the binding silently;
+  AshSqlite now refuses it, at compile time and again on its first statement.
   """
   use ExUnit.Case, async: false
 
-  alias AshCell.Test.{BoundPatient, Note, Patient}
+  import ExUnit.CaptureIO
+
+  alias AshCell.Test.{BoundPatient, Note}
+
+  setup_all do
+    diagnostics = capture_io(:stderr, fn -> Code.compile_quoted(shared_on_cell_repo()) end)
+    {:ok, diagnostics: diagnostics}
+  end
 
   setup do
     dir = Path.join(System.tmp_dir!(), "ash_cell_nt_#{System.unique_integer([:positive])}")
@@ -96,12 +103,25 @@ defmodule AshCell.NonTenantedTest do
     end
   end
 
-  describe "the trap: sharing the cells' repo module" do
-    test "a non-tenanted resource on the cells' repo follows whatever is bound" do
-      # AshCell.Test.Patient declares `repo AshCell.TestRepo`, the same module the
-      # cells use, so the binding it inherits decides where its rows go. Nothing
-      # raises: this is the shape to avoid, not a bug to be caught at runtime.
-      AshCell.with_tenant("acme", fn -> {:ok, _} = Patient.create("Ends Up In Acme") end)
+  describe "sharing the cells' repo module is refused" do
+    test "at compile time, by AshSqlite's verifier", %{diagnostics: diagnostics} do
+      # A Spark verifier reports through a compile diagnostic, so this fails a
+      # `--warnings-as-errors` build, which every CI job here runs.
+      assert diagnostics =~ "AshCell.TestRepo is a tenant repo"
+      assert diagnostics =~ "strategy :context"
+    end
+
+    test "and on its first statement, before a row can land in a cell" do
+      # Before upstream's tenant repo, this resource followed whatever the process
+      # had bound and its row ended up in acme's file with nothing raising.
+      error =
+        catch_error(
+          AshCell.with_tenant("acme", fn ->
+            Ash.create!(AshCell.Test.SharedOnCellRepo, %{name: "Would Be In Acme"})
+          end)
+        )
+
+      assert Exception.message(error) =~ "is a tenant repo"
 
       in_acme =
         AshCell.with_tenant("acme", fn ->
@@ -115,21 +135,42 @@ defmodule AshCell.NonTenantedTest do
           List.flatten(rows)
         end)
 
-      assert in_acme == ["Ends Up In Acme"]
+      assert in_acme == []
+    end
+  end
 
-      in_globex =
-        AshCell.with_tenant("globex", fn ->
-          %{rows: rows} =
-            Ecto.Adapters.SQL.query!(
-              AshCell.TestRepo.get_dynamic_repo(),
-              "SELECT name FROM patients",
-              []
-            )
+  # A non-tenanted resource on the cells' repo module: the shape AshSqlite refuses.
+  # Compiled by the test rather than in test/support, because compiling it is the
+  # thing under test.
+  defp shared_on_cell_repo do
+    quote do
+      defmodule AshCell.Test.SharedOnCellRepo do
+        use Ash.Resource,
+          domain: AshCell.Test.SharedOnCellRepoDomain,
+          data_layer: AshSqlite.DataLayer
 
-          List.flatten(rows)
-        end)
+        sqlite do
+          table "patients"
+          repo AshCell.TestRepo
+        end
 
-      assert in_globex == []
+        attributes do
+          uuid_primary_key :id
+          attribute :name, :string, allow_nil?: false, public?: true
+        end
+
+        actions do
+          defaults [:read, create: [:name]]
+        end
+      end
+
+      defmodule AshCell.Test.SharedOnCellRepoDomain do
+        use Ash.Domain, validate_config_inclusion?: false
+
+        resources do
+          resource AshCell.Test.SharedOnCellRepo
+        end
+      end
     end
   end
 end
