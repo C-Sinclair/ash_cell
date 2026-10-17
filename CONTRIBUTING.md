@@ -39,24 +39,18 @@ A missing `EXQLITE_USE_SYSTEM` at dep-compile time fails **silently** — you ge
 plain SQLite that cannot open an encrypted database. `mix cipher.check` is the
 only thing that catches it. Run it after any dependency rebuild.
 
-## The fork
+## ash_sqlite
 
-AshCell depends on a [fork of `ash_sqlite`](https://github.com/C-Sinclair/ash_sqlite),
-resolved from a sibling checkout when there is one and from git otherwise. The
-usual layout is two checkouts side by side:
+AshCell depends on upstream [`ash_sqlite`](https://github.com/ash-project/ash_sqlite),
+pinned to a commit on main in `mix.exs` and in every demo's `mix.exs`, because
+`c:AshSqlite.Repo.tenant_repo/2` is not in a release yet. Bump the pin deliberately,
+in all of them at once, and run the demos against it.
 
-```
-ashcell/
-  ash_cell/
-  ash_sqlite/
-```
-
-With that in place, edits to the fork are picked up on the next compile.
-
-**Keep fork changes upstreamable.** Narrow commits, matching that project's
-existing style, so each can become a PR. Everything AshCell needs from the fork
-(`tenant_binder`, `transactions?`, `transaction/4`) is behind an option that
-defaults to upstream behaviour, and it should stay that way.
+AshCell adapts to upstream's shape rather than forking it. Upstream asks the repo
+for a cell's instance before a statement and does not call back after it, which is
+why the drain's count, the read cache's invalidation and `AshCell.bound_cell/0` are
+built the way ADR-26, ADR-27 and ADR-28 describe. A change that seems to need a
+callback after the statement should start from those records.
 
 ## Before opening a pull request
 
@@ -86,10 +80,11 @@ cd demos/console && mix compile --warnings-as-errors
   open, which process owns each, and the LRU bound
 - `lib/ash_cell/cell_key.ex` — where Ash's tenant becomes a cell key, and a cell
   key becomes a filename
-- `lib/ash_cell/binder.ex` — what the fork's `tenant_binder` calls, once per
+- `lib/ash_cell/repo.ex` and `binder.ex` — `use AshCell.Repo`, and the
+  `tenant_repo/2` answer it delegates to, which the data layer calls once per
   statement
-- `lib/ash_cell/resource.ex` and `resource/` — the Spark extension: transformer,
-  verifier, and the change that carries the tenant into the transaction callback
+- `lib/ash_cell/resource.ex` and `resource/` — the Spark extension, which is a
+  verifier for `strategy :context`
 - `lib/ash_cell/lease.ex`, `replicator.ex`, `object_store.ex`, `ownership.ex` —
   durability and single-writer enforcement
 - `lib/ash_cell/migrator.ex` — per-cell schema versioning against `PRAGMA
@@ -130,8 +125,8 @@ one needs the work that makes it false.
 
 ## Releases
 
-AshCell is **not on Hex yet**, and cannot be until the fork's changes land
-upstream: Hex refuses a package with a git dependency. The package metadata in
+AshCell is **not on Hex yet**, and cannot be until upstream `ash_sqlite`
+releases `tenant_repo/2`: Hex refuses a package with a git dependency. The package metadata in
 `mix.exs` is in place for when that resolves.
 
 When it does, releases will work as:

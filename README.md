@@ -49,49 +49,46 @@ round trip.
 
 ## Requirements
 
-AshCell needs a **forked `ash_sqlite`**. This is not incidental — upstream cannot
-express database-per-tenant, for two reasons.
+AshCell needs **`ash_sqlite` from upstream main**, pinned to a commit, because the
+two things it relies on are not in a release yet.
 
 **1. Multitenancy.** SQLite has no schemas, so Ash's `strategy :context` cannot be a
 query prefix the way it is in AshPostgres. The generated SQL is identical for every
 tenant, and isolation comes entirely from *which database file the connection is
-attached to*. Nothing in upstream chooses that file, so the choice fell to whoever
-last called `Ecto.Repo.put_dynamic_repo/1` on the calling process — which means
-every caller has to bind, at every entry point, including the ones that cannot:
-`Ash.count/2` never enters `Ash.Actions.Read`, and an atomic update never
-materialises a changeset to hook.
+attached to*. Upstream `ash_sqlite` lets a repo choose that file:
+`c:AshSqlite.Repo.tenant_repo/2` returns the repo instance for a tenant, and the
+data layer asks it once per statement, from the process about to issue it. Reads,
+aggregates, atomic updates and bulk writes all route correctly with no caller
+ceremony, including `Ash.count/2`, which never enters `Ash.Actions.Read`, and an
+atomic update, which never materialises a changeset to hook.
 
-The fork adds a `tenant_binder` option. The data layer asks it which connection to
-use, once per statement, from the process about to issue it — so reads, aggregates,
-atomic updates and bulk writes all route correctly with no caller ceremony.
-
-**2. Transactions.** Upstream reports `can?(:transact) → false`, so no Ash action on
-SQLite is transactional: a `create` whose `after_action` hook fails leaves the row
-behind. That default is about contention, not capability — SQLite is fully ACID, but
-it allows one writer at a time and a contended write fails rather than queueing.
+**2. Transactions.** By default an AshSqlite repo reports `can?(:transact) → false`,
+so no Ash action on SQLite is transactional: a `create` whose `after_action` hook
+fails leaves the row behind. That default is about contention, not capability —
+SQLite is fully ACID, but it allows one writer at a time and a contended write fails
+rather than queueing.
 
 A cell is one file behind one connection with `pool_size: 1`, which is precisely the
 topology that objection doesn't apply to: there is no second writer to contend with.
-The fork adds a `transactions?` option (off by default, so upstream behaviour is
-unchanged) and the callbacks it needs, opening writes as `BEGIN IMMEDIATE`.
+A repo turns transactions on with `c:AshSqlite.Repo.write_transactions?/0`, and
+writes then open as `BEGIN IMMEDIATE`.
 
-Both changes are written to be upstreamable, and the intent is to retire the fork.
-Until then AshCell depends on it by git.
+`use AshCell.Repo` defines both callbacks for you.
 
 You also need **SQLCipher** if you want encrypted cells (see [Encryption](#encryption)).
 
 ## Installation
 
-**Not on Hex, and not able to be** until the fork's changes land upstream — Hex
-refuses a package with a git dependency. Install from git:
+**Not on Hex, and not able to be** until upstream `ash_sqlite` releases
+`tenant_repo/2` — Hex refuses a package with a git dependency. Install from git:
 
 ```elixir
 def deps do
   [
     {:ash_cell, github: "C-Sinclair/ash_cell"},
-    # Required: see Requirements above. `override: true` because ash_cell's own
-    # dependency tree would otherwise pull upstream ash_sqlite.
-    {:ash_sqlite, github: "C-Sinclair/ash_sqlite", override: true}
+    # Required: see Requirements above. The same commit ash_cell pins.
+    {:ash_sqlite,
+     github: "ash-project/ash_sqlite", ref: "d200a69d662ed5acd45a69f97196f91f081d2d2c"}
   ]
 end
 ```
@@ -121,15 +118,20 @@ children = [
 | `:snapshot` | on with a store | When a cell ships itself. A keyword list (`wal_bytes`, `max_age_ms`, `interval_ms`) or `false` to ship only on drain. See [Replication and ownership](#replication-and-ownership). |
 | `:owner` | `node()` | This node's identity in leases. |
 
-The repo is an ordinary `AshSqlite.Repo`:
+The repo is an `AshSqlite.Repo` made a cell repo by `use AshCell.Repo`:
 
 ```elixir
 defmodule MyApp.CellRepo do
-  use AshSqlite.Repo, otp_app: :my_app
+  use AshCell.Repo, otp_app: :my_app
 
   def installed_extensions, do: []
+  def min_sqlite_version, do: %Version{major: 3, minor: 38, patch: 0}
 end
 ```
+
+That makes it a tenant repo, which serves `strategy :context` resources only.
+AshSqlite reports any other resource on it at compile time, so tables shared across
+cells go on a repo module of their own.
 
 ## Defining a resource
 
@@ -162,10 +164,8 @@ defmodule MyApp.Patient do
 end
 ```
 
-The extension does three things: points the resource's `tenant_binder` at
-`AshCell.Binder`, sets `transactions? true`, and adds a change that carries the
-tenant to the one callback which cannot read it off a changeset. Set
-`tenant_binder` or `transactions?` yourself and your value wins.
+The binding and the transactions come from the repo, so the extension only checks,
+at compile time, that the resource declares `strategy :context`.
 
 ## Usage
 
@@ -201,21 +201,27 @@ atomic, put them in one cell.
 ### Resources that are not cells
 
 A shared table is a plain `AshSqlite.DataLayer` resource — `AshCell.Resource`
-requires a tenant. Transactions still work via the `sqlite` section directly:
+requires a tenant. Transactions still work, from its repo:
 
 ```elixir
+defmodule MyApp.GlobalRepo do
+  use AshSqlite.Repo, otp_app: :my_app
+
+  def write_transactions?, do: true
+end
+
 sqlite do
   table "plans"
   repo MyApp.GlobalRepo   # <- its own repo module, not MyApp.CellRepo
-  transactions? true
 end
 ```
 
-**Give it its own repo module.** Ecto keys the dynamic binding as
-`{repo_module, :dynamic_repo}`, so binding a cell affects one module only. A shared
-resource on its own repo module is immune to cell bindings by construction. One
-sharing the cells' repo module inherits whatever the process happens to have bound,
-and its rows land in that tenant's database — silently.
+**It must have its own repo module, and AshSqlite enforces that.** Ecto keys the
+dynamic binding as `{repo_module, :dynamic_repo}`, so binding a cell affects one
+module only. A shared resource on its own repo module is immune to cell bindings by
+construction. A resource without `strategy :context` on the cells' repo module is
+reported at compile time and raises on its first statement, rather than following
+whatever the process happens to have bound into that tenant's database.
 
 ### Working outside a resource
 
@@ -424,15 +430,16 @@ AshCell.ReadCache.read(channel, :manifest, fn -> build_manifest(channel) end)
 
 A cache in front of a shared database is a correctness problem, because you cannot
 know when somebody else wrote. A cell has exactly one writer and this node is it, so
-the invalidation is not a guess: `AshCell.Binder` brackets every write, erasing the
-cell's entries and bumping an epoch before the statement and again *after* the commit,
-and refuses to publish while a write is open. Readers may repopulate, because
-publishing is a compare-and-set on that epoch. Writers are monitored, so a crash
-mid-write cannot leave a stale entry publishable forever.
+the invalidation is not a guess. Every write is bracketed: the cell's entries are
+erased and an epoch bumped before the statement, when the data layer asks the repo
+for the cell, and again *after* the commit, from the repo's query telemetry. Publishing
+is refused while a write is open. Readers may repopulate, because publishing is a
+compare-and-set on that epoch. Writers are monitored, so a crash mid-write cannot
+leave a stale entry publishable forever.
 
-Writes that bypass the data layer — raw Ecto under `with_tenant/2`, a `checkpoint/1`,
-a restore — must call `AshCell.ReadCache.invalidate/1` themselves. This is the same
-boundary `AshCell.Binder` has, for the same reason.
+A raw statement under `with_tenant/2` runs on the bound cell and is caught the same
+way. A statement against a repo pid nobody bound, or a restore that rewrites the
+file, is not, and must call `AshCell.ReadCache.invalidate/1` itself.
 
 It is a **single node's** cache. A four-value `read_strategy` enum
 (`:owner`, `:cached`, `:replicated`, `:leased`) was designed and then cut: `:owner`

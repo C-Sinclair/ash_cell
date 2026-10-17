@@ -12,9 +12,10 @@ tenant is resolved to a *cell key* once, at the edge; everything below that spea
 cell keys. So the cut does not have to be "one cell per customer" — see
 [Cutting cells some other way](#cutting-cells-some-other-way).
 
-AshCell requires a **fork of `ash_sqlite`**. Upstream cannot express
-database-per-tenant: SQLite has no schemas, so isolation comes entirely from which
-file the connection is attached to, and nothing upstream chooses that file.
+AshCell requires **`ash_sqlite` from upstream main**, pinned to a commit. SQLite has
+no schemas, so isolation comes entirely from which file the connection is attached
+to, and `c:AshSqlite.Repo.tenant_repo/2` is how a repo chooses that file. It is not
+in a release yet.
 
 ## Setting up
 
@@ -33,6 +34,18 @@ children = [
 `:repo` is a **template**, not a started repo. Each cell starts its own anonymous
 instance of it. Do NOT also add `MyApp.CellRepo` to the supervision tree, and do not
 add it to `config :my_app, ecto_repos:` — it is never started under its own name.
+
+Define it with `use AshCell.Repo`, which makes it a tenant repo and turns
+transactions on:
+
+```elixir
+defmodule MyApp.CellRepo do
+  use AshCell.Repo, otp_app: :my_app
+
+  def installed_extensions, do: []
+  def min_sqlite_version, do: %Version{major: 3, minor: 38, patch: 0}
+end
+```
 
 ## Defining a cell resource
 
@@ -65,9 +78,8 @@ end
 
 - `strategy :context` is required. `AshCell.Resource` has a verifier that rejects
   `:attribute` and rejects a resource with no multitenancy at all.
-- The extension sets `tenant_binder AshCell.Binder` and `transactions? true` in the
-  `sqlite` section, and adds a change carrying the tenant into the transaction
-  callback. Setting either option yourself wins.
+- The extension sets nothing. Binding and transactions come from the repo, through
+  `use AshCell.Repo`.
 
 ## Calling actions
 
@@ -80,9 +92,9 @@ MyApp.Patient.create("Ada Lovelace", tenant: "acme")
 ```
 
 This works from **any process** — a controller, a `Task`, a LiveView callback, an
-Oban job on another node. The data layer asks `AshCell.Binder` for a connection once
-per statement, from the process about to issue it, so nothing is inherited and
-nothing needs wrapping.
+Oban job on another node. The data layer asks the repo's `tenant_repo/2` for a
+connection once per statement, from the process about to issue it, so nothing is
+inherited and nothing needs wrapping.
 
 **Do not call `AshCell.bind/1` before an Ash call.** It is redundant on an
 `AshCell.Resource` resource, and writing it teaches the wrong model — that the
@@ -136,21 +148,21 @@ Write queries accordingly — these are data-layer limits, not AshCell's:
 ## Non-tenanted resources
 
 A shared table is a plain `AshSqlite.DataLayer` resource — `AshCell.Resource`
-requires a tenant. **Give it its own repo module:**
+requires a tenant. **Give it its own repo module**, with `use AshSqlite.Repo` and
+`def write_transactions?, do: true` if it needs transactions:
 
 ```elixir
 sqlite do
   table "plans"
   repo MyApp.GlobalRepo   # NOT MyApp.CellRepo
-  transactions? true
 end
 ```
 
 Ecto keys its dynamic binding as `{repo_module, :dynamic_repo}`. A shared resource
-on its own module is immune to cell bindings by construction. One sharing the cells'
-repo module inherits whatever the process happens to have bound, and **its rows land
-in that tenant's database, silently**. This is the single most damaging mistake
-available in an AshCell codebase.
+on its own module is immune to cell bindings by construction. AshSqlite reports a
+resource without `strategy :context` on a tenant repo at compile time, and raises on
+its first statement, because otherwise its rows would land in whichever tenant's
+database the process happened to have bound.
 
 ## Cross-data-layer relationships
 
@@ -305,8 +317,9 @@ both scale with.
 ## Reads that must not open a cell
 
 `AshCell.ReadCache` publishes per-cell projections into `:persistent_term`, read
-lock-free from any process. It is sound *because* a cell has one writer: writes
-bracket themselves with `begin_write/1` and `end_write/2`, and publishing is refused
+lock-free from any process. It is sound *because* a cell has one writer: every write
+the data layer issues is bracketed, opened when the repo is asked for the cell and
+closed by the repo's query telemetry after the commit, and publishing is refused
 while a write is in flight. Do not reach for a general-purpose cache here — the
 invalidation is what makes this correct, and a shared-database cache cannot have it.
 

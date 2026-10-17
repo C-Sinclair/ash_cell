@@ -47,10 +47,13 @@ that is an ADR, not a paragraph buried in the design doc.
   shape stated (dataset, warm or cold, median of how many). An estimate must be labelled one.
 - **Say where it stops.** Each demo README argues what it proves *and* where it stops. When a
   demo's behaviour changes, that README is part of the change.
-- **Fork changes go upstream-shaped.** Changes needed in `ash_sqlite` are made in the sibling
-  checkout as narrow commits matching that project's style, so each can become a PR. Both the
-  `tenant_binder` and `write_transactions?` options default to current upstream behaviour for exactly
-  this reason — see [ADR-03](docs/decisions/ADR-03-fork-ash-sqlite-narrowly.md).
+- **Upstream `ash_sqlite`, pinned.** AshCell depends on `ash-project/ash_sqlite` at a commit on
+  main, in `mix.exs` and every demo's `mix.exs`. Adapt AshCell to upstream's shape before
+  proposing an upstream change — see [ADR-03](docs/decisions/ADR-03-fork-ash-sqlite-narrowly.md).
+  Upstream's `tenant_repo/2` gives AshCell no callback after a statement, which is why
+  [ADR-26](docs/decisions/ADR-26-count-in-flight-work-at-the-pool.md),
+  [ADR-27](docs/decisions/ADR-27-close-a-cache-write-from-the-query-event.md) and
+  [ADR-28](docs/decisions/ADR-28-read-the-bound-cell-off-the-ecto-binding.md) exist.
 - **Markdown links are checked.** `link_verifier` runs in CI and on every edit via a hook. Local
   links must resolve; relative links resolve from the file's own directory.
 - Prefer answering a question with a small probe over building infrastructure for an answer we do
