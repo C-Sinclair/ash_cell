@@ -309,8 +309,8 @@ defmodule AshCell do
   # Ash defers notifications while one is open and expects whoever opened it to
   # flush them on commit; without this they are built, never sent, and Ash warns
   # about having missed them. `Ash.transaction/3` cannot just be delegated to,
-  # because it hardcodes its transaction reason and so leaves no channel for the
-  # tenant to reach the data layer.
+  # because it opens its transaction through a resource's data layer, and this
+  # function has a tenant and no resource.
   defp deferring_notifications(fun) do
     started? = !Process.put(:ash_started_transaction?, true)
     outer = Process.delete(:ash_notifications)
@@ -330,7 +330,9 @@ defmodule AshCell do
   defp flush_or_discard({:error, _rolled_back}, _started?), do: Process.delete(:ash_notifications)
 
   defp flush_notifications do
+    # Ash queues each action's notifications as a nested list onto the last.
     (Process.delete(:ash_notifications) || [])
+    |> List.flatten()
     |> Ash.Notifier.notify()
   end
 

@@ -8,7 +8,8 @@ defmodule AshCell.Test.BoundPatient do
   use Ash.Resource,
     domain: AshCell.Test.Domain,
     data_layer: AshSqlite.DataLayer,
-    extensions: [AshCell.Resource]
+    extensions: [AshCell.Resource],
+    simple_notifiers: [AshCell.Test.Notifier]
 
   sqlite do
     table "tenant_patients"

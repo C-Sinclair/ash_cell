@@ -150,6 +150,21 @@ defmodule AshCell.TransactionTest do
                end)
     end
 
+    test "delivers every action's notifications once it commits, and none before" do
+      Process.put(:ash_cell_notify, self())
+
+      {:ok, :done} =
+        AshCell.transaction("acme", fn ->
+          {:ok, _} = BoundPatient.create("A", tenant: "acme")
+          {:ok, _} = BoundPatient.create("B", tenant: "acme")
+          refute_received {:notified, _, _}
+          :done
+        end)
+
+      assert_received {:notified, :create, "A"}
+      assert_received {:notified, :create, "B"}
+    end
+
     test "reports that it is in a transaction, and that it is not afterwards" do
       refute AshCell.in_transaction?()
 
