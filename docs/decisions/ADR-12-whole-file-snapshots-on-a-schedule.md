@@ -47,7 +47,7 @@ never viable at scale, independent of the side-effect problem. celld's own figur
 ### Option C — celld 0.3.0's peer-replicated write-behind log (fourth path)
 
 RPO=0 via a 3-disk fleet quorum, S3 as async archive. Structurally it fits: single writer per
-cell gives unambiguous commit order, and if the durability wait sits inside the fork's
+cell gives unambiguous commit order, and if the durability wait sits inside the data layer's
 `transaction/4` commit, the pre-ack side-effect problem largely dissolves, because Ash already
 fires notifications post-commit. Rejected anyway: it needs ≥3 nodes with durable local disk
 across AZs plus a membership/quorum protocol — trading away the design's most distinctive

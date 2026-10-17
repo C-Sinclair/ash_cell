@@ -18,7 +18,7 @@ that, and the number came back and reversed the design.
 |---|---|---|
 | [DD-01](DD-01-cell-runtime.md) | Cell lifecycle: activation, eviction, quarantine, drain, quiescence, holders | built |
 | [DD-02](DD-02-replication-and-ownership.md) | Leases, generations, txid fencing, snapshot and restore, periodic shipping | built |
-| [DD-03](DD-03-tenant-binding.md) | How a query reaches the right database: cell keys, the binder, the fork's seam, transactions | built |
+| [DD-03](DD-03-tenant-binding.md) | How a query reaches the right database: cell keys, the binder, the data layer's seam, transactions | built |
 | [DD-04](DD-04-read-cache.md) | The `persistent_term` read cache and its epoch bracketing | built |
 | [DD-05](DD-05-time-travel-and-forks.md) | Reading a cell at a past txid, and copy-on-write forks of one | draft |
 | [DD-06](DD-06-append-log-and-compaction.md) | The append log and its fold-snapshot-truncate compaction | draft |

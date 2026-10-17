@@ -1,15 +1,17 @@
 # ADR-05 — Refuse cross-cell transactions rather than build a coordinator
 
 **Status:** accepted
+**Last changed:** 2026-10-17 — the refusal of a statement for another cell inside an open transaction is now upstream `ash_sqlite`'s, which compares the instance `tenant_repo/2` returns with the one bound. The refusal of a nested transaction stays in `AshCell.transaction/2`, which now reads the bound cell off Ecto's binding ([ADR-28](ADR-28-read-the-bound-cell-off-the-ecto-binding.md)).
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
 **Relates to:** [`docs/spec.md`](../spec.md) · `ash_cell/lib/ash_cell/manager.ex`
 
 ## The decision
 
-Keep the existing guard that raises when a statement for one cell would run inside a transaction
-opened for another, and when a transaction is opened for a second tenant inside one already open
-for a first. Both nestings are refused, not coordinated. `assert_same_cell!/1` compares cell keys,
+Keep the guards that raise when a statement for one cell would run inside a transaction opened for
+another, and when a transaction is opened for a second tenant inside one already open for a first.
+Both nestings are refused, not coordinated. The first guard is upstream `ash_sqlite`'s
+(`bind_tenant_repo/5`); the second is `AshCell.transaction/2`'s. `assert_same_cell!/1` compares cell keys,
 not tenants, so two tenants that share one cell (for example, two tenants inside one monthly
 window) are correctly treated as one connection and one transaction.
 

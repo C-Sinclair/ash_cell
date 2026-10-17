@@ -19,12 +19,13 @@ live in [`../design/`](../design), and reference these.
 | # | Decision | Status |
 |---|---|---|
 | [01](ADR-01-bind-tenants-per-process.md) | Bind tenants per-process with `put_dynamic_repo/1`, not a query-context pid | corrects an earlier belief |
-| [02](ADR-02-bind-in-the-data-layer.md) | Bind in the data layer via a `tenant_binder` seam, not action hooks | accepted |
-| [03](ADR-03-fork-ash-sqlite-narrowly.md) | Fork `ash_sqlite` narrowly and keep it upstreamable; do not vendor it | accepted |
+| [02](ADR-02-bind-in-the-data-layer.md) | Bind in the data layer, through the repo's `tenant_repo/2`, not action hooks | accepted |
+| [03](ADR-03-fork-ash-sqlite-narrowly.md) | Depend on upstream `ash_sqlite`; the narrow fork is retired | reversed |
 | [04](ADR-04-transactions-behind-an-opt-in-flag.md) | Enable transactions behind an opt-in flag, with `BEGIN IMMEDIATE` | accepted |
 | [05](ADR-05-refuse-cross-cell-transactions.md) | Refuse cross-cell transactions rather than build a coordinator | accepted |
 | [06](ADR-06-own-repo-for-shared-tables.md) | Give non-tenanted resources their own repo module | accepted |
 | [07](ADR-07-opaque-cell-keys.md) | Key cells by an opaque cell key, and encode it injectively | accepted |
+| [28](ADR-28-read-the-bound-cell-off-the-ecto-binding.md) | Read the bound cell off Ecto's binding, not a process-dictionary entry beside it | accepted |
 
 ## Ownership and durability
 
@@ -38,7 +39,8 @@ live in [`../design/`](../design), and reference these.
 | [14](ADR-14-bounded-read-staleness.md) | Bound read staleness on the monotonic clock, and expose it as explicit modes | accepted |
 | [20](ADR-20-choose-a-durability-level.md) | Choose SQLite's durability level (`synchronous`) | **proposed — open** |
 | [21](ADR-21-close-does-not-await-the-connection.md) | Close does not wait for the connection; the rewrite path asks it to | accepted |
-| [22](ADR-22-where-the-tenancy-runtime-lives.md) | Keep AshCell's own tenant binder as the fork grows its own engine; the seam is the cell-key split | accepted — **seam open** |
+| [22](ADR-22-where-the-tenancy-runtime-lives.md) | AshCell owns its tenancy runtime; upstream supplies the seam and no runtime | accepted — seam question closed |
+| [26](ADR-26-count-in-flight-work-at-the-pool.md) | Count a cell's in-flight statements at its connection pool, not around each bind | accepted |
 | [23](ADR-23-merge-by-fast-forward-or-refuse.md) | Merge a branch only when its origin has not moved; refuse divergence rather than reconcile it, and measure divergence by content digest | accepted |
 | [24](ADR-24-a-segment-set-is-not-a-disjoint-cover.md) | A stream reader de-duplicates by offset and does not trust the store's listing to be duplicate-free | corrects an earlier belief |
 
@@ -47,6 +49,7 @@ live in [`../design/`](../design), and reference these.
 | # | Decision | Status |
 |---|---|---|
 | [13](ADR-13-pool-size-one-and-cache.md) | Keep `pool_size` at 1 and cache above SQLite instead | corrects an earlier belief |
+| [27](ADR-27-close-a-cache-write-from-the-query-event.md) | Close a read-cache write from the repo's query telemetry, not from a wrapper | accepted |
 | [15](ADR-15-sqlcipher-from-the-system-build.md) | Get SQLCipher from the system build, and guard it with `mix cipher.check` | accepted |
 | [17](ADR-17-bind-per-liveview-callback.md) | Bind per LiveView callback, never at mount, and track holders explicitly | accepted |
 | [18](ADR-18-tenant-in-job-args.md) | Carry the tenant in job args, and fail closed when it is missing | accepted |
@@ -89,14 +92,12 @@ false. Do not reintroduce the superseded position:
 
 ## Still open
 
-[ADR-20](ADR-20-choose-a-durability-level.md) is undecided and the risk is live, and
-[ADR-22](ADR-22-where-the-tenancy-runtime-lives.md) has shipped Option B — AshCell names its own
-binder and the suite is green — but not its seam: how much of the fork's tenancy engine AshCell sits
-on top of is still open, and Option C rests on an assumption nobody has tested, that the fork's
-manager can defer eviction to an external policy. Beyond it, and
+[ADR-20](ADR-20-choose-a-durability-level.md) is undecided and the risk is live. Beyond it, and
 not yet worth an ADR each: every deploy migrates every cell; reads are not fenced the way writes
 are; background jobs have no request boundary to route at; thundering herd on node loss;
 `ObjectStore.list/2` has no S3 pagination, so it breaks past 1000 snapshots; snapshot and restore
-are non-atomic whole-file operations; `assert_bound!/0` cannot detect a tenant mismatch; and a
+are non-atomic whole-file operations; `assert_bound!/0` cannot detect a tenant mismatch; a
 rewrite path that forgets `await_repo?: true` gets [ADR-21](ADR-21-close-does-not-await-the-connection.md)'s
-bug back silently.
+bug back silently; and a data-layer statement is invisible to a drain for the few microseconds
+between its cell being resolved and its asking the pool for the connection
+([ADR-26](ADR-26-count-in-flight-work-at-the-pool.md)).

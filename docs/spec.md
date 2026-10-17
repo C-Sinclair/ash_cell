@@ -26,8 +26,8 @@ Three findings reshape the plan. Two make it smaller, one makes it more honest.
    **This is now a deliberate fork in the road, not an assumption.**
 3. **AshSqlite has no aggregates** (`can?(_, {:aggregate, _}) → false`). Verified in
    source. The rev 1 "zero resource changes" claim is false and is withdrawn.
-   **Transactions, previously listed here, are now implemented** in the fork behind a
-   `write_transactions?` option and turned on by `AshCell.Resource`; the earlier
+   **Transactions, previously listed here, are now implemented** in upstream `ash_sqlite`
+   behind a repo's `write_transactions?/0`, turned on by `use AshCell.Repo`; the earlier
    `can?(_, :transact) → false` was a data layer default, not a SQLite limitation.
 
 ## 1. What AshCell is
@@ -105,7 +105,7 @@ designed first and tested adversarially, never drifted into.
 
 | Stage | Delivers | Effort |
 |---|---|---|
-| **0. Upstream** | PR to ash_sqlite for `can?(:multitenancy)` + `set_tenant/3` (open issue [#127](https://github.com/ash-project/ash_sqlite/issues/127) asks for exactly this) | days |
+| **0. Upstream** | PR to ash_sqlite for `can?(:multitenancy)` + `set_tenant/3` (open issue [#127](https://github.com/ash-project/ash_sqlite/issues/127) asks for exactly this). Merged as #224, as a tenant repo; AshCell pins upstream main | days |
 | **1. Cells** | Per-tenant repo instances via the Ash context override, cell lifecycle, routing, encryption, migration, global/tenant split, **the demo** | ~1 week |
 | **2. Replication (Path A)** | Litestream v0.5 sidecar, per-tenant config, restore-on-activation, PITR | ~2 weeks |
 | **3. Placement** | Multi-node routing, hydration orchestration, admission control, deploy/rebalance handling | ~3 weeks |
@@ -227,13 +227,12 @@ This replaces rev 1's "zero changes" claim.
 | Joins / filters on relationships | yes, **same data layer and same repo only** |
 | Upsert, `exists` subqueries | yes |
 | **Aggregates** (`count`, `sum`, `first`, aggregate filter/sort) | **no** |
-| **Transactions** (`:transact`) | **yes, opt-in per resource** |
+| **Transactions** (`:transact`) | **yes, opt-in per repo** |
 | Lateral joins, `distinct`, locks | no |
 
 Transactions were the gap with teeth — an after-hook failure left the primary write
-committed — and they are now closed. The fork adds a `write_transactions?` option to the `sqlite`
-section, off by default so upstream behaviour is unchanged, and `AshCell.Resource` turns it
-on. Writes open as `BEGIN IMMEDIATE`, because a deferred read-then-write has to upgrade its
+committed — and they are now closed. Upstream `ash_sqlite` has a `write_transactions?/0`
+callback on the repo, off by default, and `use AshCell.Repo` turns it on. Writes open as `BEGIN IMMEDIATE`, because a deferred read-then-write has to upgrade its
 lock and SQLite fails an upgrade immediately rather than waiting out `busy_timeout`.
 
 The single-writer objection that justified the old default does not bite in this layout:

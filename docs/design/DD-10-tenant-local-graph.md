@@ -3,7 +3,7 @@
 **Status:** draft
 **Date:** 2026-08-24
 **Decisions:** [ADR-19](../decisions/ADR-19-the-cell-cut-is-a-choice.md), [ADR-03](../decisions/ADR-03-fork-ash-sqlite-narrowly.md), [ADR-16](../decisions/ADR-16-isolation-is-blast-radius.md)
-**Lands in:** `lib/ash_cell/graph.ex` (new), possibly a narrow fork change for recursive CTEs
+**Lands in:** `lib/ash_cell/graph.ex` (new), possibly a narrow upstream `ash_sqlite` change for recursive CTEs
 
 ## What this is
 
@@ -17,7 +17,7 @@ B-tree walk with no network hop.
 
 ## What this proves
 
-- Recursive traversal works through the fork's data layer, or — if it does not — exactly which seam
+- Recursive traversal works through AshSqlite's data layer, or — if it does not — exactly which seam
   refuses it and what the narrow fix is. Either outcome is a result worth having on record.
 - A permission check over a tenant's own relationship graph costs a local query, and the number is
   comparable to a single indexed row read rather than to a network round trip.
@@ -86,7 +86,7 @@ read-modify-write when it arrives.
   named below precisely so this is not decided by taste.
 - **Through the data layer vs raw Ecto.** Going through Ash keeps policies, calculations, and the
   binder in play; raw Ecto certainly works. Chosen: attempt Ash, fall back to raw Ecto under
-  `with_tenant/2`, and if a *narrow* fork change makes the Ash path work, take it
+  `with_tenant/2`, and if a *narrow* upstream change makes the Ash path work, propose it
   ([ADR-03](../decisions/ADR-03-fork-ash-sqlite-narrowly.md)) since a recursive-CTE fragment is
   plausibly upstreamable.
 - **Cycle refusal always vs opt-in.** Always costs a reachability check per insert. Chosen: opt-in
@@ -112,7 +112,7 @@ Warm cell, median of 5, on generated graphs:
 ## Staging
 
 1. **Probe first, before any design work is trusted.** A ~30-line test establishing whether a
-   recursive CTE reaches SQLite through the fork's data layer, and if not, where it stops. This is
+   recursive CTE reaches SQLite through AshSqlite's data layer, and if not, where it stops. This is
    the repo's own rule — answer a question with a small probe — and everything below depends on
    the answer.
 2. **Edges table and traversal functions** (`ancestors/3`, `descendants/3`, `reachable?/3`) with a
@@ -143,7 +143,7 @@ Warm cell, median of 5, on generated graphs:
 
 ## Open risks
 
-- **Stage 1 may fail.** If recursive CTEs cannot reach SQLite through the fork or through raw Ecto
+- **Stage 1 may fail.** If recursive CTEs cannot reach SQLite through AshSqlite or through raw Ecto
   under `with_tenant/2`, this feature is a much smaller thing (single-level edges) and the doc
   should be cut down rather than kept aspirational.
 - **The cross-cell limit may make ReBAC not worth shipping.** If the honest answer is "this handles

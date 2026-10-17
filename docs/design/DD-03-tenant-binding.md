@@ -8,8 +8,18 @@
 ## What this is
 
 How an ordinary `Ash.read!(Patient, tenant: "acme")` ends up running against `acme`'s own
-SQLite file rather than whichever file the calling process happens to have bound: a fork seam
-(`tenant_binder`) that lets the data layer ask, once per statement, which connection to use.
+SQLite file rather than whichever file the calling process happens to have bound: a seam that
+lets the data layer ask, once per statement, which connection to use.
+
+Built in the fork as a `tenant_binder` DSL option, and since 2026-10-17 upstream's
+`c:AshSqlite.Repo.tenant_repo/2` on the repo, which `use AshCell.Repo` implements. The staging
+below records the fork's version. Upstream's callback does not wrap the statement, so the work
+the fork's binder did after each statement moved: see
+[ADR-26](../decisions/ADR-26-count-in-flight-work-at-the-pool.md),
+[ADR-27](../decisions/ADR-27-close-a-cache-write-from-the-query-event.md), and
+[ADR-28](../decisions/ADR-28-read-the-bound-cell-off-the-ecto-binding.md). A non-tenanted
+resource on the cells' repo module is now refused rather than silently bound
+([ADR-06](../decisions/ADR-06-own-repo-for-shared-tables.md)).
 
 ## What this proves
 
@@ -45,8 +55,8 @@ changeset to hook).
 Three vocabularies, deliberately kept distinct rather than collapsed into one
 ([ADR-07](../decisions/ADR-07-opaque-cell-keys.md)):
 
-1. Ash's **tenant** — unchanged at every Ash-facing edge: `tenant_binder`, `CarryTenant`,
-   `Binder`, `Resource`, `LiveView`, `Job`.
+1. Ash's **tenant** — unchanged at every Ash-facing edge: `tenant_repo/2`, `Binder`,
+   `Resource`, `LiveView`, `Job`.
 2. AshCell's **cell key** — the registry key, file path, and object-store prefix.
    `AshCell.CellKey.resolve/1` maps tenant → cell key once, at `AshCell.bind/1`; everything
    below the binder speaks only cell keys.

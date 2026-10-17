@@ -1,18 +1,24 @@
 # ADR-04 — Enable transactions behind an opt-in `write_transactions?` flag, with `BEGIN IMMEDIATE`
 
 **Status:** accepted
-**Last changed:** 2026-08-27 — the flag's schema default was silently defeating `AshCell.Resource`; see *How the default was carried* and its evidence.
+**Last changed:** 2026-10-17 — the flag is upstream's `c:AshSqlite.Repo.write_transactions?/0` on the repo, not a resource DSL option, and `use AshCell.Repo` returns `true`. Ash ≥ 3.33.2 passes the tenant to `transaction/4` in the transaction reason, so `AshCell.Resource.Changes.CarryTenant` and the transformer that added it are deleted. The Spark-default trap below can no longer happen here, because nothing sets the flag from a transformer.
+**Previously changed:** 2026-08-27 — the flag's schema default was silently defeating `AshCell.Resource`; see *How the default was carried* and its evidence.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
 **Relates to:** [`docs/spec.md`](../spec.md) · `ash_sqlite/lib/data_layer.ex` ·
-`ash_cell/lib/ash_cell/resource/changes/carry_tenant.ex`
+`ash_cell/lib/ash_cell/repo.ex`
 
 ## The decision
 
-Add a `write_transactions? true` option to the fork's `sqlite` DSL section, default `false` so upstream
-behaviour is unchanged. When set, writes open with `BEGIN IMMEDIATE`, and
-`prefer_transaction_for_atomic_updates?` stays `false` so a single-statement atomic update is not
-wrapped or downgraded.
+Turn transactions on per repo with `c:AshSqlite.Repo.write_transactions?/0`, which upstream
+defaults to `false` so its behaviour is unchanged. `use AshCell.Repo` returns `true`. When it is
+on, writes open with `BEGIN IMMEDIATE`, and `prefer_transaction_for_atomic_updates?` stays `false`
+so a single-statement atomic update is not wrapped or downgraded. Ash passes the tenant to the data
+layer's `transaction/4` as `reason[:tenant]`, so nothing in AshCell has to carry it.
+
+Until 2026-10-17 this was a `write_transactions? true` option in the fork's `sqlite` DSL section,
+set by `AshCell.Resource`'s transformer, with a change to carry the tenant. The rest of this record
+describes that version where it says so.
 
 ## Context
 
@@ -50,11 +56,13 @@ Measured: two deferred read-then-write transactions racing produced one `Exqlite
 
 Three further points, each load-bearing and each established by test rather than assumed:
 
-- **The tenant must reach `transaction/4` through `changeset.context[:data_layer]`.** Ash calls
-  `transaction/4` above the data layer, and nothing in the transaction reason names a tenant.
-  `AshCell.Resource.Changes.CarryTenant` puts it there. Three shapes had to be accepted:
-  single-record paths pass `context[:data_layer]`, bulk paths pass the whole changeset context, and
-  a read carries its query — `reason_tenant/1` handles all three.
+- **The tenant must reach `transaction/4`.** Ash calls `transaction/4` above the data layer. In
+  the fork's version nothing in the transaction reason named a tenant, so
+  `AshCell.Resource.Changes.CarryTenant` put it in `changeset.context[:data_layer]`, and
+  `reason_tenant/1` had to accept three shapes of context. Ash ≥ 3.33.2 puts the tenant in the
+  reason itself, upstream reads `reason[:tenant]`, and the change is deleted.
+  `test/transaction_test.exs` "the transaction Ash opens for an action" checks that a two-insert
+  action still opens its transaction on its own cell and rolls both inserts back on failure.
 - **`in_transaction?/1` must not assume the repo module is started.** Ash asks before opening a
   transaction, and a repo reached only via `put_dynamic_repo/1` has no named process, so
   `Ecto.Repo.in_transaction?/0` raises instead of answering.
@@ -68,11 +76,14 @@ A nested-savepoint caveat was found and left unresolved: `exqlite/lib/exqlite/co
 uses a single fixed savepoint name (`exqlite_savepoint`) rather than one appended per nesting level,
 flagged as worth testing at depth ≥ 2 but not resolved here.
 
-## How the default is carried, and how it silently was not
+## How the default was carried, and how it silently was not
 
-`AshCell.Resource` turns the flag on for the resources it is applied to, via
-`AshCell.Resource.Transformers.BindTenant`, which sets `write_transactions?` only if the resource
-has not set it — so an explicit `write_transactions? false` still wins.
+This section describes the fork's version. Nothing in AshCell sets the flag from a transformer
+now: it is a function on the repo, and `use AshCell.Repo` defines it.
+
+`AshCell.Resource` turned the flag on for the resources it was applied to, via
+`AshCell.Resource.Transformers.BindTenant`, which set `write_transactions?` only if the resource
+had not set it — so an explicit `write_transactions? false` still won.
 
 **That mechanism broke, and it broke quietly.** The option was declared in the fork's schema with
 `default: false`. Spark materialises a schema default into the section's `opts`, so
@@ -98,18 +109,18 @@ this unless the user did" can only work on an option with no schema default.
 
 ## Consequences
 
-- **What it rules out.** Relying on upstream's default transaction behaviour anywhere — a resource
-  must opt in with `write_transactions? true` to get transactional semantics at all.
-- **What it makes worse.** `AshCell.Resource.Changes.CarryTenant` now exists purely to smuggle the
-  tenant past a layer of Ash that was not designed to carry it, and `reason_tenant/1` has to handle
-  three different changeset shapes to do it.
+- **What it rules out.** Relying on upstream's default transaction behaviour anywhere — a repo
+  must opt in with `write_transactions?/0` to get transactional semantics at all. It is per repo,
+  so every resource on a cell repo transacts, with or without `AshCell.Resource`.
+- **What it makes worse.** Nothing AshCell-specific any more. The fork's version needed
+  `CarryTenant` to smuggle the tenant past Ash; Ash now carries it.
 - **What stays open.** The nested-savepoint naming caveat, untested at depth ≥ 2. This directly
   informs [ADR-05](ADR-05-refuse-cross-cell-transactions.md) (nesting a transaction on another
   tenant is refused outright) and [ADR-06](ADR-06-own-repo-for-shared-tables.md) (shared tables get
   their own repo and their own transactions, not nested ones).
-- **What now depends on it.** Any resource wanting transactional writes must set
-  `write_transactions? true`; the drain path's `force: true` mid-transaction abort behaviour; the fork's
-  `prefer_transaction_for_atomic_updates? → false` setting.
+- **What now depends on it.** Any repo wanting transactional writes must return `true` from
+  `write_transactions?/0`; the drain path's `force: true` mid-transaction abort behaviour;
+  upstream's `prefer_transaction_for_atomic_updates? → false`.
 
 ## Evidence
 

@@ -1,13 +1,19 @@
 # ADR-22 — Where the database-per-tenant runtime lives: the fork or AshCell
 
-**Status:** accepted — Option B shipped, seam still open
-**Last changed:** 2026-08-29 — the fork's tenancy work was consolidated onto one trunk (`feat/tenancy`, from `feat/multitenancy-engine` plus the `write_transactions?` schema-default fix), and in doing so `AshSqlite.Tenancy.*` was renamed to `AshSqlite.MultiTenancy.*`. The module names in the tables below are the pre-rename ones and are kept as written, because they are what the comparison was made against; `AshSqlite.TenantBinder`, the only name AshCell actually depends on, did not move. AshCell's suite is green against the trunk (288/0).
+**Status:** accepted — Option B shipped; the seam question is closed by upstream
+**Last changed:** 2026-10-17 — AshCell depends on upstream `ash_sqlite`, not the fork ([ADR-03](ADR-03-fork-ash-sqlite-narrowly.md)). Upstream has none of the fork's tenancy engine: no managed tenant databases, no `global?` shared database, no `AshSqlite.MultiTenancy.Binder`, and no default binder. It asks the repo for an instance through `c:AshSqlite.Repo.tenant_repo/2` and leaves the runtime to the application. So there is no second runtime to draw a seam against, Option C has nothing to split, and AshCell owns the whole local runtime. The body below is the comparison as it was made against the fork.
+**Previously changed:** 2026-08-29 — the fork's tenancy work was consolidated onto one trunk (`feat/tenancy`, from `feat/multitenancy-engine` plus the `write_transactions?` schema-default fix), and in doing so `AshSqlite.Tenancy.*` was renamed to `AshSqlite.MultiTenancy.*`. The module names in the tables below are the pre-rename ones and are kept as written, because they are what the comparison was made against; `AshSqlite.TenantBinder`, the only name AshCell actually depends on, did not move. AshCell's suite is green against the trunk (288/0).
 **Previously changed:** 2026-08-27 — Option B is implemented and the suite is green. The remaining work it named (naming the binder on resources that do not use the extension) was one line. Option C is still where this is heading and is still unverified.
 **Date:** 2026-08-24
 **Deciders:** Conor Sinclair (owns both repos)
 **Relates to:** [`ADR-02`](ADR-02-bind-in-the-data-layer.md), [`ADR-03`](ADR-03-fork-ash-sqlite-narrowly.md), [`ADR-07`](ADR-07-opaque-cell-keys.md), [`ADR-09`](ADR-09-snapshot-before-releasing-the-lease.md), [`ADR-10`](ADR-10-fail-closed-on-a-refused-shipment.md), [`ADR-19`](ADR-19-the-cell-cut-is-a-choice.md), [`../design/DD-01-cell-runtime.md`](../design/DD-01-cell-runtime.md), [`../design/DD-03-tenant-binding.md`](../design/DD-03-tenant-binding.md), `lib/ash_cell/manager.ex`, `lib/ash_cell/cell.ex`, `lib/ash_cell/registry.ex`, `lib/ash_cell/cell_key.ex`
 
 ## The decision
+
+**AshCell owns its database-per-tenant runtime, and answers upstream's
+`c:AshSqlite.Repo.tenant_repo/2` with it.** Upstream `ash_sqlite` supplies the seam and no runtime
+behind it, so nothing else is on offer. The rest of this section is the decision as it stood
+against the fork, which did ship a runtime.
 
 **AshCell keeps supplying its own `AshSqlite.TenantBinder` rather than relying on the fork's
 default.** The fork is deliberately growing its own database-per-tenant engine, and that engine is

@@ -1,15 +1,21 @@
-# ADR-03 — Fork `ash_sqlite` narrowly and keep it upstreamable; do not vendor it
+# ADR-03 — Depend on upstream `ash_sqlite`; the narrow fork is retired
 
-**Status:** accepted
+**Status:** reversed
+**Last changed:** 2026-10-17 — upstream `ash_sqlite` main now supports `strategy :context` through a tenant repo (`c:AshSqlite.Repo.tenant_repo/2`) and transactions through `c:AshSqlite.Repo.write_transactions?/0`. AshCell pins upstream at `d200a69` and no longer depends on the fork. The fork's API did not land as written: upstream's callback returns an instance rather than wrapping the statement, which is why [ADR-26](ADR-26-count-in-flight-work-at-the-pool.md), [ADR-27](ADR-27-close-a-cache-write-from-the-query-event.md) and [ADR-28](ADR-28-read-the-bound-cell-off-the-ecto-binding.md) exist.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
-**Relates to:** [`docs/spec.md`](../spec.md) · `ash_sqlite/`
+**Relates to:** [`docs/spec.md`](../spec.md) · `mix.exs`
 
 ## The decision
 
-Keep the changes needed for AshCell as a narrow fork of `ash_sqlite`, tracked in `ash_sqlite/` with
-commits matching the upstream project's own style, and aimed at becoming upstream PRs. Do not
-vendor a renamed copy.
+Depend on upstream `ash-project/ash_sqlite`, pinned to a git ref until a release contains
+`tenant_repo/2`. Do not fork it and do not vendor it. When AshCell needs something upstream does
+not have, adapt AshCell to upstream's shape first, and propose a narrow upstream change only when
+that is not possible.
+
+From 2026-08-21 until 2026-10-17 the decision was the opposite: keep a narrow fork with commits in
+upstream's style, aimed at becoming upstream PRs. That fork is what upstream's tenant repo grew out
+of, and the reasoning that chose it over vendoring follows.
 
 ## Context
 
@@ -57,7 +63,21 @@ the package (only Hex packages can be dependencies): ash_sqlite"). Measured befo
 Cost: still a fork, still a git dependency `mix hex.build` will not package; the bridge option
 below is needed if Hex publication becomes urgent.
 
+### Option E — upstream `ash_sqlite`, pinned to a ref (chosen since 2026-10-17)
+
+Upstream merged context multitenancy as `c:AshSqlite.Repo.tenant_repo/2` (#224), then moved
+`write_transactions?` from the resource DSL onto the repo and deleted `with_repo/4` (`d200a69`).
+Costs: a git dependency until a release, so `mix hex.build` still refuses AshCell; and no callback
+after a statement, which AshCell's binder had used for three things.
+
 ## Decision and why
+
+Since 2026-10-17: upstream, because the fork existed to get these features upstream and they are
+there. Carrying a fork whose API upstream chose not to take would keep AshCell on an interface
+nobody else maintains. The redesign that upstream's shape forced on `AshCell.Binder` is recorded
+in ADR-26, ADR-27 and ADR-28.
+
+The original reasoning, for the fork over vendoring:
 
 "The cost is real and the benefit is mostly imagined — a clean 5-commit rebase is not a fork in
 trouble." The 16:1 ratio and the zero-conflict rebase are the numbers that decided it, not a
@@ -69,18 +89,25 @@ the rebase starts conflicting; as of this ADR, neither has happened.
 
 ## Consequences
 
-- **What it rules out.** Publishing `ash_sqlite` to Hex under the AshCell project's own namespace
-  in the near term, since `mix hex.build` refuses a git dependency.
-- **What it makes worse.** The project stays exposed to upstream drift until the PRs land or are
-  declined; every AshCell release depends on the fork rebasing cleanly.
-- **What stays open.** Whether upstream accepts `tenant_binder` and `write_transactions?` as PRs is
-  unresolved — this ADR records the plan, not the outcome.
-- **What now depends on it.** The convention that fork changes go in `ash_sqlite/`, as narrow
-  commits matching the project's existing style, set here, is assumed by
-  [ADR-02](ADR-02-bind-in-the-data-layer.md) and [ADR-13](ADR-13-pool-size-one-and-cache.md), both
-  of which land their changes the same way.
+- **What it rules out.** Changing `ash_sqlite` from this repo. A need upstream does not meet is
+  met in AshCell or proposed upstream.
+- **What it makes worse.** AshCell is pinned to an unreleased upstream commit, so it still cannot
+  be published to Hex, and a bump can bring API changes with it: `d200a69` is titled "spike out
+  simplifying multitenancy".
+- **What stays open.** When upstream releases `tenant_repo/2`, and whether its shape changes
+  before then.
+- **What now depends on it.** `AshCell.Repo`, `AshCell.Binder.tenant_repo/2`, and every demo's
+  cell repo.
 
 ## Evidence
+
+- Upstream `ash_sqlite` `3ef9388` ("support `strategy :context` multitenancy via a tenant repo",
+  #224) and `d200a69` ("spike out simplifying multitenancy via moving config to repo"), read at
+  `upstream/main`. #224 was opened from this fork's `tenant_binder` work, and its description
+  says so.
+
+The original evidence, for the fork over vendoring:
+
 
 - Diff shape: 534 insertions / 12 deletions across 5 commits, touching `lib/data_layer.ex`,
   `lib/data_layer/info.ex`, `lib/tenant_binder.ex`, and tests; 12 lines of existing upstream code

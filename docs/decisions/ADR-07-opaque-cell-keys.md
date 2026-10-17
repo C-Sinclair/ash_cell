@@ -17,7 +17,7 @@ Tenant-to-storage-identity had been one implicit identity function. `tenant` was
 throughout the storage layer, so the only real coupling was `VerifyMultitenancy`'s hardcoded
 assumption of one database per tenant. Naming the resolver step reframed "alternative
 architectures" as "alternative keys", and exposed three meanings sharing one word: Ash's tenant
-vocabulary (unchanged at the Ash-facing edges — `tenant_binder`, `CarryTenant`, `Binder`,
+vocabulary (unchanged at the Ash-facing edges — `tenant_repo/2`, `Binder`,
 `Resource`, `LiveView`, `Job`); AshCell's `cell_key`; and the resolver between them.
 
 Two real bugs forced the injectivity requirement, not taste. `Manager` interpolated the raw key

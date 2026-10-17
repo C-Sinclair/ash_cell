@@ -49,10 +49,12 @@ This only works because a cell is single-writer; it would not transfer to a shar
 ## Data model
 
 Nothing persisted. Per cell, an epoch counter and a set of named entries keyed by cell key and
-projection name. `AshCell.Binder` is the only writer of the epoch, because it is the only place
-that sees every statement and already knows read from write via the `:usage` argument added to
-the fork's `tenant_binder` seam
-([ADR-02](../decisions/ADR-02-bind-in-the-data-layer.md)).
+projection name. The data layer's writes are the only writers of the epoch, because the data
+layer is the only place that sees every statement and already knows read from write, via the
+`type` argument of `tenant_repo/2`
+([ADR-02](../decisions/ADR-02-bind-in-the-data-layer.md)). `AshCell.Binder` opens a write and
+the repo's query telemetry closes it after the commit
+([ADR-27](../decisions/ADR-27-close-a-cache-write-from-the-query-event.md)).
 
 Moving to exact-key deletes adds one thing to that state: the set of projection names each cell
 has actually published. Invalidation has to erase what exists without being told what that is,

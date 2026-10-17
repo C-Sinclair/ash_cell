@@ -1,7 +1,13 @@
 # ADR-13 — Keep `pool_size` at 1 and cache above SQLite instead
 
 **Status:** corrects an earlier belief
-**Last changed:** 2026-08-21 — the *store* beneath the cache is now measured rather than
+**Last changed:** 2026-10-17 — the write bracket is no longer one wrapper in
+`AshCell.Binder`. Upstream's `tenant_repo/2` gives AshCell a call before a write and none
+after it, so the bracket is opened there and closed by the repo's query telemetry; see
+[ADR-27](ADR-27-close-a-cache-write-from-the-query-event.md). `pool_size: 1` is also now what
+makes the drain's in-flight count readable from the pool; see
+[ADR-26](ADR-26-count-in-flight-work-at-the-pool.md).
+**Previously changed:** 2026-08-21 — the *store* beneath the cache is now measured rather than
 assumed. `:persistent_term` was chosen on read cost alone; invalidation cost was never
 measured. It is measured now, and the default changes to ETS.
 **Date:** 2026-08-21
@@ -11,8 +17,8 @@ measured. It is measured now, and the default changes to ETS.
 
 ## The decision
 
-Keep `pool_size: 1` in `cell.ex` — no library change — and get the read win from a cache in
-`AshCell.Binder` instead. This reverses an earlier belief that widening the pool was "the cheap
+Keep `pool_size: 1` in `cell.ex` — no library change — and get the read win from a cache above
+SQLite instead, `AshCell.ReadCache`, invalidated by every write the data layer issues. This reverses an earlier belief that widening the pool was "the cheap
 10x": measured, it is flat to noise on point reads and materially worse on a realistic filtered
 join.
 
@@ -90,8 +96,8 @@ and never appears in the caller's wall clock:
 
 **622 µs with nobody holding a reference at all** is the finding that decides it. The scan is not
 priced by the readers a projection has; it is priced by the process table. A fleet of 10,000
-cells each written once a minute is 167 writes a second, and `AshCell.Binder` brackets every
-write twice, so that is ~330 invalidations a second, each one a node-wide pass.
+cells each written once a minute is 167 writes a second, and every write
+invalidates twice, so that is ~330 invalidations a second, each one a node-wide pass.
 
 Read cost, same probe, 32 concurrent readers × 500 reads:
 
@@ -143,9 +149,9 @@ The pool measurement settled Option A outright: extra connections on one SQLite 
 contention, not parallelism, so widening the pool is not a lever worth pulling. The
 `persistent_term` cache (Option B) delivers the actual win, and it is safe specifically because
 a cell has one writer and this node is it — cache invalidation is exact, not heuristic. The
-cache lives in `AshCell.Binder`, the only place that sees every statement, and which knows read
-from write via [ADR-02](ADR-02-bind-in-the-data-layer.md)'s `:usage` argument — this is what
-made the cache possible at all.
+cache is invalidated from the data layer, the only place that sees every statement, which tells
+read from write via [ADR-02](ADR-02-bind-in-the-data-layer.md)'s `:read | :mutate` type — this
+is what made the cache possible at all.
 
 Between Options D and E: ETS by exact key, because the read advantage `:persistent_term` was
 chosen for turns out to be conditional on the projection being large, while its invalidation
@@ -197,8 +203,9 @@ not shipped:
   writes on that node slower, because the scan does not care whose term it was. A per-projection
   option with a node-wide consequence is a sharp edge, and the docs have to say so where the
   option is chosen rather than only here.
-- **What now depends on it.** `AshCell.Binder`'s epoch bracket: writes **erase and bump the
-  epoch before the statement and again after commit**. The second bump is the one that matters
+- **What now depends on it.** The epoch bracket, opened by `AshCell.Binder.tenant_repo/2` and
+  closed by `AshCell.ReadCache.handle_query/4` ([ADR-27](ADR-27-close-a-cache-write-from-the-query-event.md)):
+  writes **erase and bump the epoch before the statement and again after commit**. The second bump is the one that matters
   — without it a reader could build a projection from pre-commit state, publish while the write
   is still open, and have that stale entry survive the commit. Publishing is refused outright
   while a write is open. Writers are monitored, so a crash mid-write cannot leave a stale entry
