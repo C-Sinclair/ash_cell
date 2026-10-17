@@ -15,14 +15,17 @@ claim.
 | [`relay/`](relay) | one cell per **stream** | That an offset can outlive the process that issued it. A resumable token stream where a reader reconnects after the generator is killed, the cell is closed, and its file is deleted — served from offset-keyed segments in the object store, stitched onto the cell, then onto live fan-out. |
 | [`vcs/`](vcs) | one cell per **repository** | That a cell fits a genuinely single-writer domain. A small version control system — Rust CLI, Ash server — where objects and the ref move in one transaction, so Git's `main.lock` and its optimistic retry are not needed. The losing push is refused, not reconciled. |
 
-They all depend on the library and the fork by relative path:
+They all depend on the library by relative path, and on upstream `ash_sqlite` at the commit the
+library pins:
 
 ```elixir
-{:ash_sqlite, path: "../../../ash_sqlite", override: true},
+{:ash_sqlite,
+ github: "ash-project/ash_sqlite", ref: "d200a69d662ed5acd45a69f97196f91f081d2d2c"},
 {:ash_cell, path: "../.."}
 ```
 
-so an edit in either is picked up on the next `mix compile` with no publishing step.
+so an edit to the library is picked up on the next `mix compile` with no publishing step. Each
+demo's cell repo is `use AshCell.Repo`.
 
 ## Shared prerequisites
 

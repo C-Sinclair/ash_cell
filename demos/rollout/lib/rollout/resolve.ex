@@ -22,8 +22,8 @@ defmodule Rollout.Resolve do
   channel-cell epoch and served from `AshCell.ReadCache`.
 
   The cache is sound because the cell has exactly one writer and it is on this node:
-  `AshCell.Binder` brackets every write, so a promotion erases this projection
-  before its statement and again after its commit. There is no window in which a
+  every write the data layer issues is bracketed, so a promotion erases this
+  projection before its statement and again after its commit. There is no window in which a
   resolve can answer from a pointer that has been superseded — which is the
   guarantee the whole demo exists to make good on.
 

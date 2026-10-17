@@ -205,17 +205,18 @@ is about whether you are permitted to trust the local copy. On the same replica 
 same file, one resource can demand a valid read lease while another reads the local copy
 immediately. Same bytes, different admission rule.
 
-The seam is now in the fork. `AshSqlite.TenantBinder.bind/3` carries the resource and
-a `:usage` of `:read`, `:write`, or `:transaction`, because only the data layer can say
-which — by the time a binder sees a statement the distinction has been compiled into SQL
-it does not parse. That is what lets `AshCell.Binder` bracket writes for the read cache
-and leave reads alone, and it is what a per-resource read admission rule would be built
-on.
+The seam is now upstream. `c:AshSqlite.Repo.tenant_repo/2` carries the resource and a
+`type` of `:read` or `:mutate`, because only the data layer can say which — by the time a
+repo is asked for a connection the distinction has been compiled into SQL it does not
+parse. That is what lets `AshCell.Binder` open a read-cache write for a mutation and leave
+reads alone, and it is what a per-resource read admission rule would be built on. The
+write is closed after its commit by the repo's query telemetry, because upstream's callback
+does not wrap the statement ([ADR-27](../../../docs/decisions/ADR-27-close-a-cache-write-from-the-query-event.md)).
 
 One correction to record: `AshCell.transaction/2` needs its own bracket, because it
-opens its transaction *below* the data layer. The binder sees each statement inside it as
-its own write and would close the bracket at the last statement rather than at the
-commit — a gap wide enough for a reader to publish a projection built from uncommitted
+opens its transaction *below* the data layer. The binder, as it was then, saw each
+statement inside it as its own write and would close the bracket at the last statement
+rather than at the commit — a gap wide enough for a reader to publish a projection built from uncommitted
 state. The integration test caught it; it was not reasoned out in advance.
 
 The coupling that cannot be escaped: **the strictest resource in a cell sets the write

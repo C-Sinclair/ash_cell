@@ -33,9 +33,10 @@ defmodule Shroud.MixProject do
   defp deps do
     [
       {:phoenix, "~> 1.7.14"},
-      {:ash, "~> 3.31"},
+      {:ash, "~> 3.33 and >= 3.33.2"},
       {:ash_postgres, "~> 2.11"},
-      {:ash_sqlite, path: "../../../ash_sqlite", override: true},
+      {:ash_sqlite,
+       github: "ash-project/ash_sqlite", ref: "d200a69d662ed5acd45a69f97196f91f081d2d2c"},
       {:ash_cell, path: "../.."},
       {:ecto_sqlite3, "~> 0.12"},
       {:phoenix_ecto, "~> 4.5"},

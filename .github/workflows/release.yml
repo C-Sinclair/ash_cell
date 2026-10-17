@@ -37,9 +37,10 @@ jobs:
 
           echo "Publishing ${project_version}."
 
-      # This will fail until the fork's changes land upstream: AshCell resolves
-      # ash_sqlite from git, and Hex refuses a package with a git dependency.
-      # The failure is the correct outcome — it is a reminder, not an oversight.
+      # This will fail until upstream ash_sqlite releases `tenant_repo/2`: AshCell
+      # pins ash_sqlite to a git ref, and Hex refuses a package with a git
+      # dependency. The failure is the correct outcome — it is a reminder, not an
+      # oversight.
       - run: mix hex.publish --yes
         env:
           HEX_API_KEY: ${{ secrets.HEX_API_KEY }}

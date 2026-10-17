@@ -1,5 +1,7 @@
 import Config
 
+config :ash, :default_string_length_count, :codepoints
+
 config :collab_editor, generators: [timestamp_type: :utc_datetime]
 
 config :collab_editor, CollabEditorWeb.Endpoint,

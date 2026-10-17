@@ -7,6 +7,8 @@
 # General application configuration
 import Config
 
+config :ash, :default_string_length_count, :codepoints
+
 config :shroud,
   ecto_repos: [Shroud.Repo],
   generators: [timestamp_type: :utc_datetime]

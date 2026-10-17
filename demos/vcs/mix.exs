@@ -55,8 +55,9 @@ defmodule Vcs.MixProject do
 
   defp deps do
     [
-      {:ash, "~> 3.31"},
-      {:ash_sqlite, path: "../../../ash_sqlite", override: true},
+      {:ash, "~> 3.33 and >= 3.33.2"},
+      {:ash_sqlite,
+       github: "ash-project/ash_sqlite", ref: "d200a69d662ed5acd45a69f97196f91f081d2d2c"},
       {:ash_cell, path: "../.."},
       {:ecto_sqlite3, "~> 0.12"},
       {:phoenix, "~> 1.7.14"},

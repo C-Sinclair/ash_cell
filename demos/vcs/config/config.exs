@@ -1,5 +1,7 @@
 import Config
 
+config :ash, :default_string_length_count, :codepoints
+
 config :vcs, :ash_domains, [Vcs.Store]
 
 # One connection per cell. A repository is a single-writer object, and the pool size is

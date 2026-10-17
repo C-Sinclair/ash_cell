@@ -5,7 +5,8 @@ defmodule Rollout.CellRepo do
   A cell starts `start_link(name: nil, database: <channel>.db)` against this
   module, so the module is a template and the pid is the binding.
   """
-  use AshSqlite.Repo, otp_app: :rollout
+  use AshCell.Repo, otp_app: :rollout
 
   def installed_extensions, do: []
+  def min_sqlite_version, do: %Version{major: 3, minor: 38, patch: 0}
 end
