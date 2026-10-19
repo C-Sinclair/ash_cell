@@ -10,6 +10,13 @@ out in a minor version bump and are called out here with what to change.
 
 ## [Unreleased]
 
+### Added
+
+- **`AshCell.claim/2`.** Takes a cell's lease on this node, restores its newest
+  snapshot when the lease was taken rather than renewed (or when there is no
+  local file), and opens it. `AshCell.Lease.claim/4` reports which happened as
+  `renewed?`.
+
 ### Changed
 
 - **Upstream `ash_sqlite`, not the fork.** AshCell pins `ash-project/ash_sqlite`

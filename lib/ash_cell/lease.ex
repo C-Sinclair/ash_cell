@@ -48,7 +48,9 @@ defmodule AshCell.Lease do
   Whether that is acceptable depends on the application.
   """
 
-  defstruct [:cell_key, :owner, :etag, :expires_at, :generation, :txid]
+  # `renewed?` is true when `claim/4` found this owner already holding the lease.
+  # It is not stored in the object; it says which branch of `claim/4` ran.
+  defstruct [:cell_key, :owner, :etag, :expires_at, :generation, :txid, renewed?: false]
 
   @default_ttl_ms 30_000
 
@@ -69,7 +71,9 @@ defmodule AshCell.Lease do
   Attempts to take ownership of `cell_key`.
 
   Returns `{:ok, lease}` if this owner now holds it, or `{:error, {:held_by, owner}}`
-  if someone else does and their lease has not expired.
+  if someone else does and their lease has not expired. The lease's `renewed?` is
+  true when this owner already held it, and false when it was taken from nobody or
+  from an expired owner.
   """
   def claim(store, cell_key, owner, opts \\ []) do
     ttl = Keyword.get(opts, :ttl_ms, @default_ttl_ms)
@@ -86,9 +90,12 @@ defmodule AshCell.Lease do
         cond do
           held["owner"] == owner ->
             # A renewal keeps its generation and its place in the log.
-            write(store, cell_key, owner, now + ttl, held["generation"], held["txid"] || 0,
-              if_match: etag
-            )
+            with {:ok, lease} <-
+                   write(store, cell_key, owner, now + ttl, held["generation"], held["txid"] || 0,
+                     if_match: etag
+                   ) do
+              {:ok, %{lease | renewed?: true}}
+            end
 
           held["expires_at"] > now ->
             {:error, {:held_by, held["owner"]}}

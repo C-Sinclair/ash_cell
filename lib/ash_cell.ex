@@ -448,6 +448,67 @@ defmodule AshCell do
   defdelegate resident_cells(), to: AshCell.Registry
 
   @doc """
+  Takes ownership of a tenant's cell on this node and opens it.
+
+  Claims the lease, restores the newest snapshot over whatever is on local disk,
+  records the lease with the manager, then activates the cell. Activating a cell
+  on its own does none of this, so a node that skips `claim/2` writes a private
+  local file that never ships.
+
+  A node whose lease the store still holds only renews it, and keeps its local
+  file, which may have writes that have not shipped yet. It restores only if that
+  file is missing.
+
+  Returns `{:ok, lease}`, or `{:error, {:held_by, owner}}` while another node's
+  lease is live. `opts` are passed to `AshCell.Lease.claim/4`.
+  """
+  @spec claim(term(), keyword()) :: {:ok, %AshCell.Lease{}} | {:error, term()}
+  def claim(tenant, opts \\ []) do
+    store = require_store!()
+    cell_key = AshCell.CellKey.resolve(tenant)
+    owner = AshCell.Manager.owner()
+
+    with {:ok, lease} <- claim_lease(store, cell_key, owner, opts),
+         :ok <- maybe_restore(store, cell_key, lease),
+         # After the restore, because restoring closes the cell and closing forgets
+         # its lease.
+         :ok <- AshCell.Manager.put_lease(cell_key, lease),
+         {:ok, _cell} <- AshCell.Manager.ensure_started(cell_key) do
+      {:ok, lease}
+    end
+  end
+
+  # Two claims on one node race each other's conditional write, and the loser is
+  # told the cell is held by its own owner. The retry takes the renewal path.
+  defp claim_lease(store, cell_key, owner, opts) do
+    case AshCell.Lease.claim(store, cell_key, owner, opts) do
+      {:error, {:held_by, ^owner}} -> AshCell.Lease.claim(store, cell_key, owner, opts)
+      result -> result
+    end
+  end
+
+  # Decided from the store's lease rather than the manager's. The manager forgets a
+  # lease when the cell closes, while the store still says this node holds it, and
+  # restoring then replaced the local writes made since the last shipment. A
+  # renewal with no local file -- a node back on an empty disk inside its own lease
+  # -- has nothing to keep, and must not ship an empty database as the newest one.
+  defp maybe_restore(store, cell_key, %AshCell.Lease{renewed?: true}) do
+    if File.exists?(AshCell.path_for(cell_key)), do: :ok, else: restore_newest(store, cell_key)
+  end
+
+  defp maybe_restore(store, cell_key, _taken), do: restore_newest(store, cell_key)
+
+  # A cell with no snapshot yet has never shipped, so there is nothing to restore
+  # and it starts empty.
+  defp restore_newest(store, cell_key) do
+    case AshCell.Replicator.restore(store, cell_key) do
+      {:ok, _} -> :ok
+      {:error, :not_found} -> :ok
+      error -> error
+    end
+  end
+
+  @doc """
   Hands every resident cell over and releases its lease.
 
   Call before the node goes away. Runs automatically on supervised shutdown; see

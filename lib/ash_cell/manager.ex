@@ -105,6 +105,9 @@ defmodule AshCell.Manager do
   @doc "The configured object store, if this fleet replicates."
   def store, do: GenServer.call(__MODULE__, :store)
 
+  @doc "The owner name this node writes into leases."
+  def owner, do: GenServer.call(__MODULE__, :owner)
+
   @doc "The lease held for `cell_key`, if any."
   def lease(cell_key), do: GenServer.call(__MODULE__, {:lease, cell_key})
 
@@ -380,6 +383,7 @@ defmodule AshCell.Manager do
   def handle_call(:unseal, _from, state), do: {:reply, :ok, %{state | sealed?: false}}
   def handle_call(:sealed?, _from, state), do: {:reply, state.sealed?, state}
   def handle_call(:store, _from, state), do: {:reply, state.store, state}
+  def handle_call(:owner, _from, state), do: {:reply, state.owner, state}
   def handle_call({:lease, cell_key}, _from, state), do: {:reply, state.leases[cell_key], state}
 
   def handle_call({:put_lease, cell_key, lease}, _from, state) do
