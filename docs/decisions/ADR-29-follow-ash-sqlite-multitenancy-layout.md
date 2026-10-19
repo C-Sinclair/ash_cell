@@ -77,6 +77,13 @@ the final configuration exists.
   it AshSqlite's own `init/2`. The error for a missing key is now an `ArgumentError` raised while
   the repo starts, which reaches `AshCell.Manager.quarantined/0` wrapped in a tuple, where it used
   to be the atom `:no_key`.
+- **What it exposes.** Ecto's `config/0` runs `init/2` too, with no `:tenant`. AshCell used to
+  call `repo.config/0` to find the repo's telemetry prefix, and that asked the collab_editor
+  demo's vault for the key of `nil`, which crashed the demo at boot. `AshCell.ReadCache` now
+  works out the prefix as Ecto does without calling `init/2`, and `test/repo_test.exs` "starting
+  the fleet runs init/2 only for cells" pins it. Application code that calls
+  `MyApp.CellRepo.config/0` still runs `init/2` with no cell, so a key function has to answer
+  `nil` for a `nil` tenant.
 - **What stays open.** The fleet's processes are still named globally (`AshCell.Manager`,
   `AshCell.Registry`), not per repo as AshSqlite names its tenant supervisor. Two cell repos on
   one node are therefore not supported. Migrations are not aligned.
