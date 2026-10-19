@@ -288,12 +288,32 @@ defmodule AshCell.ReadCache do
     :telemetry.detach(id)
 
     :ok =
-      :telemetry.attach(
-        id,
-        repo.config()[:telemetry_prefix] ++ [:query],
-        &__MODULE__.handle_query/4,
-        nil
-      )
+      :telemetry.attach(id, telemetry_prefix(repo) ++ [:query], &__MODULE__.handle_query/4, nil)
+  end
+
+  # Worked out the way Ecto does, rather than read from `repo.config/0`: that runs
+  # the repo's init/2, which on a cell repo derives a cell's key from
+  # `config[:tenant]`, and there is no cell here.
+  defp telemetry_prefix(repo) do
+    configured =
+      case otp_app(repo) do
+        nil -> nil
+        otp_app -> otp_app |> Application.get_env(repo, []) |> Keyword.get(:telemetry_prefix)
+      end
+
+    configured ||
+      Enum.map(Module.split(repo), &(&1 |> Macro.underscore() |> String.to_atom()))
+  end
+
+  defp otp_app(repo) do
+    if function_exported?(repo, :__ash_cell_otp_app__, 0) do
+      repo.__ash_cell_otp_app__()
+    else
+      case :application.get_application(repo) do
+        {:ok, app} -> app
+        :undefined -> nil
+      end
+    end
   end
 
   @impl true

@@ -2,8 +2,8 @@ defmodule AshCell.Manager do
   @moduledoc """
   Starts, finds, and evicts cells.
 
-  Holds the fleet configuration (which repo module, where the files live, how to
-  derive a cell's encryption key, how to migrate) so that callers only ever name a
+  Holds the fleet configuration (which repo module, where the files live, whether
+  cells must be encrypted, how to migrate) so that callers only ever name a
   cell key.
 
   Everything here is keyed by *cell key*, never by tenant. Resolution from Ash's
@@ -22,7 +22,7 @@ defmodule AshCell.Manager do
   defstruct [
     :repo,
     :dir,
-    :key_for,
+    :encrypted?,
     :migrator,
     :max_resident,
     :store,
@@ -274,7 +274,7 @@ defmodule AshCell.Manager do
     state = %__MODULE__{
       repo: Keyword.fetch!(opts, :repo),
       dir: Keyword.fetch!(opts, :dir),
-      key_for: Keyword.get(opts, :key_for),
+      encrypted?: Keyword.get(opts, :encrypted?, false),
       migrator: Keyword.get(opts, :migrator),
       max_resident: Keyword.get(opts, :max_resident, @default_max_resident),
       store: Keyword.get(opts, :store),
@@ -317,15 +317,14 @@ defmodule AshCell.Manager do
       :error ->
         state = evict_if_needed(state)
 
-        # Encryption is expected whenever the fleet was given a key function. The
-        # cell uses `encrypted?` to tell "this fleet is unencrypted" apart from
-        # "this cell's key is gone", which must fail rather than degrade.
+        # The key itself comes from the repo's init/2. `encrypted?` is what tells
+        # "this fleet is unencrypted" apart from "this cell's key is gone", which
+        # must fail rather than degrade.
         opts = [
           cell_key: cell_key,
           repo: state.repo,
           path: path(state, cell_key),
-          key: key_for(state, cell_key),
-          encrypted?: not is_nil(state.key_for),
+          encrypted?: state.encrypted?,
           migrator: state.migrator,
           store: state.store,
           policy: state.snapshot
@@ -496,7 +495,4 @@ defmodule AshCell.Manager do
   # interpolating it put both a traversal ("../../x" wrote outside state.dir) and a
   # collision ("a:b" and "a_b" sharing one file) one careless key away.
   defp path(state, cell_key), do: Path.join(state.dir, AshCell.CellKey.encode(cell_key) <> ".db")
-
-  defp key_for(%{key_for: nil}, _cell_key), do: nil
-  defp key_for(%{key_for: fun}, cell_key), do: fun.(cell_key)
 end

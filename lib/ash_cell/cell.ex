@@ -56,7 +56,6 @@ defmodule AshCell.Cell do
     cell_key = Keyword.fetch!(opts, :cell_key)
     repo = Keyword.fetch!(opts, :repo)
     path = Keyword.fetch!(opts, :path)
-    key = Keyword.get(opts, :key)
     migrator = Keyword.get(opts, :migrator)
     policy = Keyword.get(opts, :policy) || %AshCell.SnapshotPolicy{enabled?: false}
 
@@ -66,12 +65,19 @@ defmodule AshCell.Cell do
     # of DBConnection retrying for seconds. A cell that cannot be opened is
     # almost never a transient condition -- it is a wrong or destroyed key, or a
     # corrupt file -- and retrying turns a clear failure into a hang.
-    repo_opts =
-      [name: nil, database: path, pool_size: 1, backoff_type: :stop]
-      |> maybe_put_key(key)
+    #
+    # `tenant:` is for the repo's init/2, which is where a cell's key comes from, and
+    # `encrypted?:` is what lets `AshCell.Repo.check_init/1` refuse a cell with none.
+    repo_opts = [
+      name: nil,
+      database: path,
+      pool_size: 1,
+      backoff_type: :stop,
+      tenant: cell_key,
+      encrypted?: Keyword.get(opts, :encrypted?, false)
+    ]
 
-    with :ok <- verify_key(key, Keyword.get(opts, :encrypted?, false)),
-         {:ok, repo_pid} <- repo.start_link(repo_opts),
+    with {:ok, repo_pid} <- repo.start_link(repo_opts),
          {:ok, version} <- migrate(repo, repo_pid, migrator) do
       now = System.monotonic_time(:millisecond)
       AshCell.Registry.put_repo(cell_key, repo_pid)
@@ -98,16 +104,6 @@ defmodule AshCell.Cell do
       {:error, reason} -> {:stop, reason}
     end
   end
-
-  defp maybe_put_key(opts, nil), do: opts
-  defp maybe_put_key(opts, key), do: Keyword.put(opts, :key, key)
-
-  # A fleet that derives keys must never fall back to an unencrypted database
-  # when a key is missing. SQLite will happily create a plaintext file for a
-  # tenant whose key was destroyed, so the failure is silent and the result is
-  # unencrypted data on disk under a name that says it is protected. Refuse.
-  defp verify_key(nil, true), do: {:error, :no_key}
-  defp verify_key(_key, _encrypted?), do: :ok
 
   # Migration runs before the cell is available, so a tenant is never served
   # against a half-migrated schema. A failure stops the cell rather than letting

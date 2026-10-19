@@ -9,6 +9,18 @@ defmodule AshCell.TestRepo do
 
   def installed_extensions, do: []
   def min_sqlite_version, do: %Version{major: 3, minor: 38, patch: 0}
+
+  # A test that wants keyed cells puts a function under `:test_key_for`, and this
+  # applies it the way an application's init/2 would: from the cell key it is given.
+  def init(context, config) do
+    config =
+      case Application.get_env(:ash_cell, :test_key_for) do
+        nil -> config
+        key_for -> Keyword.put(config, :key, key_for.(config[:tenant]))
+      end
+
+    super(context, config)
+  end
 end
 
 defmodule AshCell.TestGlobalRepo do

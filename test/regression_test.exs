@@ -188,49 +188,49 @@ defmodule AshCell.KeyFailClosedTest do
 
   setup do
     dir = Path.join(System.tmp_dir!(), "ash_cell_key_#{System.unique_integer([:positive])}")
-    on_exit(fn -> File.rm_rf!(dir) end)
+
+    # The repo's init/2 is where a cell's key comes from; "revoked" gets none.
+    Application.put_env(:ash_cell, :test_key_for, fn
+      "revoked" -> nil
+      tenant -> AshCell.Test.Keys.for_tenant(tenant)
+    end)
+
+    on_exit(fn ->
+      Application.delete_env(:ash_cell, :test_key_for)
+      File.rm_rf!(dir)
+    end)
+
     {:ok, dir: dir}
   end
 
-  test "a tenant with no key refuses to start", %{dir: dir} do
+  defp start_fleet(dir, opts) do
     start_supervised!(
-      {AshCell,
-       repo: AshCell.TestRepo,
-       dir: dir,
-       migrator: AshCell.TestMigrations,
-       key_for: fn
-         "revoked" -> nil
-         tenant -> AshCell.Test.Keys.for_tenant(tenant)
-       end}
+      {AshCell, [repo: AshCell.TestRepo, dir: dir, migrator: AshCell.TestMigrations] ++ opts}
     )
+  end
 
-    assert {:error, _} = AshCell.Manager.ensure_started("revoked")
+  test "a tenant with no key refuses to start", %{dir: dir} do
+    start_fleet(dir, encrypted?: true)
+
+    assert {:error, {%ArgumentError{message: message}, _}} =
+             AshCell.Manager.ensure_started("revoked")
+
+    assert message =~ ~s(cell "revoked" belongs to an `encrypted?: true` fleet)
     refute File.exists?(Path.join(dir, "revoked.db"))
   end
 
   test "other tenants are unaffected by one missing key", %{dir: dir} do
-    start_supervised!(
-      {AshCell,
-       repo: AshCell.TestRepo,
-       dir: dir,
-       migrator: AshCell.TestMigrations,
-       key_for: fn
-         "revoked" -> nil
-         tenant -> AshCell.Test.Keys.for_tenant(tenant)
-       end}
-    )
+    start_fleet(dir, encrypted?: true)
 
     assert {:error, _} = AshCell.Manager.ensure_started("revoked")
     assert {:ok, _pid} = AshCell.Manager.ensure_started("healthy")
   end
 
-  test "a fleet with no key function still runs unencrypted, deliberately", %{dir: dir} do
+  test "a fleet that is not encrypted? still runs without a key, deliberately", %{dir: dir} do
     # Encryption is opt-in. Only a fleet that asked for keys is failed closed when
     # one is missing; otherwise plaintext is the configured intent, not a fallback.
-    start_supervised!(
-      {AshCell, repo: AshCell.TestRepo, dir: dir, migrator: AshCell.TestMigrations}
-    )
+    start_fleet(dir, [])
 
-    assert {:ok, _pid} = AshCell.Manager.ensure_started("plaintext")
+    assert {:ok, _pid} = AshCell.Manager.ensure_started("revoked")
   end
 end
