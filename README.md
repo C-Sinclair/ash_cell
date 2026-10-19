@@ -88,7 +88,7 @@ def deps do
     {:ash_cell, github: "C-Sinclair/ash_cell"},
     # Required: see Requirements above. The same commit ash_cell pins.
     {:ash_sqlite,
-     github: "ash-project/ash_sqlite", ref: "d200a69d662ed5acd45a69f97196f91f081d2d2c"}
+     github: "ash-project/ash_sqlite", ref: "701530c544d4666f7a9d74ddf4b8ec9fad062660"}
   ]
 end
 ```

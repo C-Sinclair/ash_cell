@@ -36,7 +36,7 @@ defmodule Shroud.MixProject do
       {:ash, "~> 3.33 and >= 3.33.2"},
       {:ash_postgres, "~> 2.11"},
       {:ash_sqlite,
-       github: "ash-project/ash_sqlite", ref: "d200a69d662ed5acd45a69f97196f91f081d2d2c"},
+       github: "ash-project/ash_sqlite", ref: "701530c544d4666f7a9d74ddf4b8ec9fad062660"},
       {:ash_cell, path: "../.."},
       {:ecto_sqlite3, "~> 0.12"},
       {:phoenix_ecto, "~> 4.5"},

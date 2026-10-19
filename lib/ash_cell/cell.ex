@@ -67,7 +67,7 @@ defmodule AshCell.Cell do
     # corrupt file -- and retrying turns a clear failure into a hang.
     #
     # `tenant:` is for the repo's init/2, which is where a cell's key comes from, and
-    # `encrypted?:` is what lets `AshCell.Repo.check_init/1` refuse a cell with none.
+    # `encrypted?:` is what lets `AshCell.Repo.check_init/2` refuse a cell with none.
     repo_opts = [
       name: nil,
       database: path,

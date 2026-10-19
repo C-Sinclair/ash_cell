@@ -35,9 +35,13 @@ defmodule AshCell.Repo do
 
       def child_spec(opts), do: AshCell.Repo.child_spec(__MODULE__, @ash_cell_otp_app, opts)
 
+      # The cell key is read before `super/2`, because AshSqlite's own init/2 drops
+      # `:tenant` before returning.
       def init(context, config) do
+        cell_key = config[:tenant]
+
         with {:ok, config} <- super(context, config) do
-          AshCell.Repo.check_init(config)
+          AshCell.Repo.check_init(config, cell_key)
         end
       end
 
@@ -73,13 +77,13 @@ defmodule AshCell.Repo do
   end
 
   @doc false
-  def check_init(config) do
+  def check_init(config, cell_key) do
     if config[:encrypted?] && is_nil(config[:key]) do
       # Raised rather than defaulted. SQLite creates a plaintext file for a cell
       # opened with no key, so the failure would be silent and the file on disk
       # would be unencrypted under a fleet that says it is not.
       raise ArgumentError, """
-      cell #{inspect(config[:tenant])} belongs to an `encrypted?: true` fleet, but \
+      cell #{inspect(cell_key)} belongs to an `encrypted?: true` fleet, but \
       the repo's init/2 gave it no `:key`. Set it from `config[:tenant]` before \
       calling super/2.
       """

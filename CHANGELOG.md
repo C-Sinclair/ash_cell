@@ -20,7 +20,7 @@ out in a minor version bump and are called out here with what to change.
 ### Changed
 
 - **Upstream `ash_sqlite`, not the fork.** AshCell pins `ash-project/ash_sqlite`
-  at `d200a69` and requires ash `~> 3.33 and >= 3.33.2`. Define a cell repo with
+  at `701530c` (PR #246 merged) and requires ash `~> 3.33 and >= 3.33.2`. Define a cell repo with
   `use AshCell.Repo` instead of `use AshSqlite.Repo`; it implements
   `tenant_repo/2` and returns `true` from `write_transactions?/0`. A shared-table
   repo that needs transactions defines `write_transactions?/0` itself.

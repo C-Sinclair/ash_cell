@@ -65,7 +65,7 @@ not measurement.
 
 The key check moved with the key. `AshCell.Cell` used to receive the key from `:key_for` and refuse
 `nil` itself. The key is now computed inside the repo's `init/2`, which `AshCell.Cell` cannot see,
-so the check runs at the end of the `init/2` chain, in `AshCell.Repo.check_init/1`. That is where
+so the check runs at the end of the `init/2` chain, in `AshCell.Repo.check_init/2`. That is where
 the final configuration exists.
 
 ## Consequences
