@@ -26,6 +26,7 @@ live in [`../design/`](../design), and reference these.
 | [06](ADR-06-own-repo-for-shared-tables.md) | Give non-tenanted resources their own repo module | accepted |
 | [07](ADR-07-opaque-cell-keys.md) | Key cells by an opaque cell key, and encode it injectively | accepted |
 | [28](ADR-28-read-the-bound-cell-off-the-ecto-binding.md) | Read the bound cell off Ecto's binding, not a process-dictionary entry beside it | accepted |
+| [29](ADR-29-follow-ash-sqlite-multitenancy-layout.md) | Configure and start cells the way `AshSqlite.MultiTenancy` configures and starts tenants | accepted |
 
 ## Ownership and durability
 

@@ -26,6 +26,14 @@ out in a minor version bump and are called out here with what to change.
   count is read from each cell's connection pool, the read cache's write bracket
   is closed from the repo's query telemetry, and `AshCell.bound_cell/0` is read
   off Ecto's binding. `AshCell.ReadCache.start_link/1` takes `repo:`.
+- **A cell repo starts its own fleet.** Put `MyApp.CellRepo` in the supervision
+  tree with its options under `tenants:` (in the repo's application env, or as
+  the child's option) instead of `{AshCell, repo: MyApp.CellRepo, ...}`. That
+  child spec still works.
+- **`:key_for` is gone; a cell's key comes from the repo's `init/2`.** Each cell
+  starts its repo instance with `tenant:` set to its cell key. Set `:key` from
+  `config[:tenant]` in an `init/2` override before calling `super/2`, and mark
+  the fleet `encrypted?: true` to keep refusing a cell with no key.
 - **Cell keys encode as `AshSqlite.MultiTenancy` encodes tenants.** Uppercase
   letters are escaped and the hex is lowercase, so `"Acme"` is `~41cme.db`. The
   old encoding let `"Acme"` and `"acme"` share one file on a case-insensitive
@@ -63,7 +71,7 @@ The working tree implements:
 - **Per-cell migrations.** `AshCell.Migrator` versions each cell against
   `PRAGMA user_version` and applies migrations on activation. A cell whose
   migration fails is quarantined. `mix ash_cell.migrate` migrates eagerly.
-- **Encryption at rest.** A `:key_for` callback opens each cell under that
+- **Encryption at rest.** The repo's `init/2` opens each cell under that
   tenant's own SQLCipher key. `mix cipher.check` guards the silent failure mode
   where `exqlite` was built without SQLCipher.
 - **Replication and ownership.** Snapshots to S3-compatible storage

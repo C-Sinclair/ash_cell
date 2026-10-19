@@ -19,33 +19,27 @@ in a release yet.
 
 ## Setting up
 
-Add the fleet to the supervision tree. It is a supervisor, not a repo:
+Define the cell repo with `use AshCell.Repo` and put it in the supervision tree.
+Starting a cell repo starts its cells, configured under `tenants:`, the key
+`AshSqlite.MultiTenancy` uses:
 
 ```elixir
-children = [
-  {AshCell,
-   repo: MyApp.CellRepo,
-   dir: "/data/cells",
-   migrator: MyApp.CellMigrations,
-   max_resident: 256}
-]
-```
+config :my_app, MyApp.CellRepo,
+  tenants: [dir: "/data/cells", migrator: MyApp.CellMigrations, max_resident: 256]
 
-`:repo` is a **template**, not a started repo. Each cell starts its own anonymous
-instance of it. Do NOT also add `MyApp.CellRepo` to the supervision tree, and do not
-add it to `config :my_app, ecto_repos:` — it is never started under its own name.
-
-Define it with `use AshCell.Repo`, which makes it a tenant repo and turns
-transactions on:
-
-```elixir
 defmodule MyApp.CellRepo do
   use AshCell.Repo, otp_app: :my_app
 
   def installed_extensions, do: []
   def min_sqlite_version, do: %Version{major: 3, minor: 38, patch: 0}
 end
+
+children = [MyApp.CellRepo]
 ```
+
+Each cell starts its own anonymous instance of the repo, with `tenant:` set to its
+cell key, so `init/2` sees `config[:tenant]`. Do not add `MyApp.CellRepo` to
+`config :my_app, ecto_repos:` — no instance is ever started under its own name.
 
 ## Defining a cell resource
 
@@ -202,7 +196,15 @@ end
 ## Encryption
 
 ```elixir
-{AshCell, repo: MyApp.CellRepo, dir: "/data/cells", key_for: &MyApp.Vault.key_for/1}
+config :my_app, MyApp.CellRepo, tenants: [dir: "/data/cells", encrypted?: true]
+
+defmodule MyApp.CellRepo do
+  use AshCell.Repo, otp_app: :my_app
+
+  def init(context, config) do
+    super(context, Keyword.put(config, :key, MyApp.Vault.key_for(config[:tenant])))
+  end
+end
 ```
 
 Requires `exqlite` compiled against SQLCipher, which is not the default and **fails
@@ -218,8 +220,9 @@ mix deps.compile exqlite --force
 Run `mix cipher.check` after any dependency rebuild. It asserts `PRAGMA
 cipher_version` is non-empty, and it is the only thing that catches this.
 
-A fleet configured with `key_for` never falls back to an unencrypted file when a key
-is missing — the cell refuses to start.
+An `encrypted?: true` fleet never falls back to an unencrypted file when a key is
+missing — the cell refuses to start. Set `:key` before calling `super/2`, because the
+check runs in `AshCell.Repo`'s own `init/2`.
 
 ## Replication and ownership
 
@@ -232,7 +235,7 @@ store =
     secret_access_key: System.fetch_env!("AWS_SECRET_ACCESS_KEY")
   )
 
-{AshCell, repo: MyApp.CellRepo, dir: "/data/cells", store: store}
+{MyApp.CellRepo, tenants: [dir: "/data/cells", store: store]}
 ```
 
 Correctness rests on the **conditional write**, not on the lease. Durability writes

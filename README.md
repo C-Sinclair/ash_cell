@@ -95,43 +95,45 @@ end
 
 ## Setup
 
-Add the fleet to your supervision tree:
+Define the cell repo with `use AshCell.Repo`, and put it in your supervision tree.
+Starting a cell repo starts its cells, configured under its `tenants:` key — the
+same key `AshSqlite.MultiTenancy` reads:
 
 ```elixir
-children = [
-  {AshCell,
-   repo: MyApp.CellRepo,
-   dir: "/data/cells",
-   migrator: MyApp.CellMigrations,
-   max_resident: 256}
-]
-```
+config :my_app, MyApp.CellRepo,
+  tenants: [dir: "/data/cells", migrator: MyApp.CellMigrations, max_resident: 256]
 
-| Option | Default | Meaning |
-|---|---|---|
-| `:repo` | *required* | A repo module used as a **template**. Each cell starts its own anonymous instance of it (`start_link(name: nil, database: path)`), so the module is never started under its own name. |
-| `:dir` | *required* | Directory holding the cell files. |
-| `:migrator` | `nil` | Module defining per-cell migrations. See [Migrations](#migrations). |
-| `:max_resident` | `256` | Residency bound. Once reached, the least-recently-used cell is closed. Closing drops a connection; the data is a file and stays put. |
-| `:key_for` | `nil` | `fn tenant -> key end`. Supplying it turns on encryption. |
-| `:store` | `nil` | An `AshCell.ObjectStore` struct. Supplying it turns on replication and lease-based ownership. |
-| `:snapshot` | on with a store | When a cell ships itself. A keyword list (`wal_bytes`, `max_age_ms`, `interval_ms`) or `false` to ship only on drain. See [Replication and ownership](#replication-and-ownership). |
-| `:owner` | `node()` | This node's identity in leases. |
-
-The repo is an `AshSqlite.Repo` made a cell repo by `use AshCell.Repo`:
-
-```elixir
 defmodule MyApp.CellRepo do
   use AshCell.Repo, otp_app: :my_app
 
   def installed_extensions, do: []
   def min_sqlite_version, do: %Version{major: 3, minor: 38, patch: 0}
 end
+
+children = [MyApp.CellRepo]
 ```
 
-That makes it a tenant repo, which serves `strategy :context` resources only.
-AshSqlite reports any other resource on it at compile time, so tables shared across
-cells go on a repo module of their own.
+`tenants:` can also be given as the child's option, `{MyApp.CellRepo, tenants: [...]}`,
+which is merged over the application env.
+
+| `tenants:` option | Default | Meaning |
+|---|---|---|
+| `:dir` | *required* | Directory holding the cell files. |
+| `:migrator` | `nil` | Module defining per-cell migrations. See [Migrations](#migrations). |
+| `:max_resident` | `256` | Residency bound. Once reached, the least-recently-used cell is closed. Closing drops a connection; the data is a file and stays put. |
+| `:encrypted?` | `false` | Refuse to open a cell whose `init/2` set no `:key`. See [Encryption](#encryption). |
+| `:store` | `nil` | An `AshCell.ObjectStore` struct. Supplying it turns on replication and lease-based ownership. |
+| `:snapshot` | on with a store | When a cell ships itself. A keyword list (`wal_bytes`, `max_age_ms`, `interval_ms`) or `false` to ship only on drain. See [Replication and ownership](#replication-and-ownership). |
+| `:owner` | `node()` | This node's identity in leases. |
+
+Each cell starts its own anonymous instance of the repo,
+`start_link(name: nil, database: path, tenant: cell_key)`, so the repo's `init/2` sees
+which cell it is opening as `config[:tenant]`. The repo is never started under its own
+name, so leave it out of `ecto_repos`.
+
+`use AshCell.Repo` also makes it a tenant repo, which serves `strategy :context`
+resources only. AshSqlite reports any other resource on it at compile time, so tables
+shared across cells go on a repo module of their own.
 
 ## Defining a resource
 
@@ -265,10 +267,19 @@ mix ash_cell.migrate --tenants acme,globex
 
 ## Encryption
 
-Supply `:key_for` and each cell is opened with that tenant's own key:
+Set each cell's key in the repo's `init/2`, from the cell key it is given, and mark
+the fleet `encrypted?: true`:
 
 ```elixir
-{AshCell, repo: MyApp.CellRepo, dir: "/data/cells", key_for: &MyApp.Vault.key_for/1}
+config :my_app, MyApp.CellRepo, tenants: [dir: "/data/cells", encrypted?: true]
+
+defmodule MyApp.CellRepo do
+  use AshCell.Repo, otp_app: :my_app
+
+  def init(context, config) do
+    super(context, Keyword.put(config, :key, MyApp.Vault.key_for(config[:tenant])))
+  end
+end
 ```
 
 Requires `exqlite` compiled against SQLCipher, which is not the default and **fails
@@ -285,8 +296,10 @@ mix deps.compile exqlite --force
 Then `mix cipher.check` asserts `PRAGMA cipher_version` is non-empty. Run it after
 any dependency rebuild — the assertion is the only thing that catches this.
 
-A fleet configured with `key_for` never falls back to an unencrypted file when a key
-is missing; the cell refuses to start. Destroying a key shreds exactly one tenant.
+An `encrypted?: true` fleet never falls back to an unencrypted file when a key is
+missing; the cell refuses to start. The check runs in `AshCell.Repo`'s own `init/2`,
+which is why the override sets `:key` before calling `super/2`. Destroying a key
+shreds exactly one tenant.
 
 ## Replication and ownership
 
@@ -302,7 +315,7 @@ store =
     secret_access_key: System.fetch_env!("AWS_SECRET_ACCESS_KEY")
   )
 
-{AshCell, repo: MyApp.CellRepo, dir: "/data/cells", store: store}
+{MyApp.CellRepo, tenants: [dir: "/data/cells", store: store]}
 ```
 
 Correctness rests on the conditional write, not on the lease: a fenced writer's
