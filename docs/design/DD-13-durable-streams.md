@@ -78,8 +78,8 @@ workload this is built for is exactly wrong.
 
 ## Data model
 
-Two tables in the cell, created by `AshCell.Stream.migrate/1` from the application's migrator
-(the library does not own the fleet's migration list):
+Two tables in the cell, created by `AshCell.Stream.Migration.up/0` from one of the application's
+migration files (the library does not own the fleet's migration list):
 
 - **`ash_cell_stream_entries`** — `stream` (text), `seq` (integer), `payload` (blob),
   `at` (integer, unix ms). Primary key `(stream, seq)`, which is also the only read path: a

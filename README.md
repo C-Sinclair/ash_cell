@@ -101,7 +101,7 @@ same key `AshSqlite.MultiTenancy` reads:
 
 ```elixir
 config :my_app, MyApp.CellRepo,
-  tenants: [dir: "/data/cells", migrator: MyApp.CellMigrations, max_resident: 256]
+  tenants: [dir: "/data/cells", migrations_path: "priv/cell_migrations", max_resident: 256]
 
 defmodule MyApp.CellRepo do
   use AshCell.Repo, otp_app: :my_app
@@ -119,7 +119,7 @@ which is merged over the application env.
 | `tenants:` option | Default | Meaning |
 |---|---|---|
 | `:dir` | *required* | Directory holding the cell files. |
-| `:migrator` | `nil` | Module defining per-cell migrations. See [Migrations](#migrations). |
+| `:migrations_path` | `nil` | Directory of Ecto migration files run in each cell. See [Migrations](#migrations). |
 | `:max_resident` | `256` | Residency bound. Once reached, the least-recently-used cell is closed. Closing drops a connection; the data is a file and stays put. |
 | `:encrypted?` | `false` | Refuse to open a cell whose `init/2` set no `:key`. See [Encryption](#encryption). |
 | `:store` | `nil` | An `AshCell.ObjectStore` struct. Supplying it turns on replication and lease-based ownership. |
@@ -238,22 +238,30 @@ end)
 ## Migrations
 
 There is no moment at which the whole fleet shares a schema — that is the price of a
-database per tenant. Migrations are versioned per cell against `PRAGMA user_version`
-and applied on activation, before the cell serves anything.
+database per tenant. Each cell runs the Ecto migration files in the fleet's
+`migrations_path` when it opens, before it serves anything, and records them in its own
+`schema_migrations` table. The files are named `<version>_<name>.exs`, the layout
+`AshSqlite.MultiTenancy` reads:
 
 ```elixir
-defmodule MyApp.CellMigrations do
-  use AshCell.Migrator
+config :my_app, MyApp.CellRepo,
+  tenants: [dir: "/data/cells", migrations_path: "priv/cell_migrations"]
+```
 
-  migration 1, """
-  CREATE TABLE patients (id TEXT PRIMARY KEY, name TEXT NOT NULL)
-  """
+```elixir
+# priv/cell_migrations/1_create_patients.exs
+defmodule MyApp.CellMigrations.CreatePatients do
+  use Ecto.Migration
 
-  migration 2, fn repo_pid ->
-    Ecto.Adapters.SQL.query!(repo_pid, "ALTER TABLE patients ADD COLUMN mrn TEXT", [])
+  def up do
+    execute("CREATE TABLE patients (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
   end
 end
 ```
+
+A cell migrated by the old `AshCell.Migrator` recorded its version in `PRAGMA
+user_version`. On first open it records every file up to that version as already run,
+so keep each old migration's number: `migration 1` becomes `1_<name>.exs`.
 
 A cell whose migration fails does not start: it is **quarantined** and its tenant
 gets an error rather than a database in an unknown state.

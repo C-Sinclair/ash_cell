@@ -25,7 +25,7 @@ Starting a cell repo starts its cells, configured under `tenants:`, the key
 
 ```elixir
 config :my_app, MyApp.CellRepo,
-  tenants: [dir: "/data/cells", migrator: MyApp.CellMigrations, max_resident: 256]
+  tenants: [dir: "/data/cells", migrations_path: "priv/cell_migrations", max_resident: 256]
 
 defmodule MyApp.CellRepo do
   use AshCell.Repo, otp_app: :my_app
@@ -166,26 +166,30 @@ Denormalise the attributes you filter or sort by into the cell at write time.
 
 ## Migrations
 
-There is no moment at which the fleet shares a schema. Migrations are versioned per
-cell against `PRAGMA user_version` and applied on activation, before the cell serves
-anything.
+There is no moment at which the fleet shares a schema. Each cell runs the Ecto
+migration files in `migrations_path` when it opens, before it serves anything, and
+records them in its own `schema_migrations` table.
 
 ```elixir
-defmodule MyApp.CellMigrations do
-  use AshCell.Migrator
+config :my_app, MyApp.CellRepo,
+  tenants: [dir: "/data/cells", migrations_path: "priv/cell_migrations"]
+```
 
-  migration 1, """
-  CREATE TABLE patients (id TEXT PRIMARY KEY, name TEXT NOT NULL)
-  """
+```elixir
+# priv/cell_migrations/1_create_patients.exs
+defmodule MyApp.CellMigrations.CreatePatients do
+  use Ecto.Migration
 
-  migration 2, fn repo_pid ->
-    Ecto.Adapters.SQL.query!(repo_pid, "ALTER TABLE patients ADD COLUMN mrn TEXT", [])
+  def up do
+    execute("CREATE TABLE patients (id TEXT PRIMARY KEY, name TEXT NOT NULL)")
   end
 end
 ```
 
-- Migrations are **append-only and numbered from 1**. Never renumber or edit a
-  shipped migration — cells that already ran it will not run it again.
+- Migrations are **append-only**. Never renumber or edit a shipped migration — cells
+  that already ran it will not run it again. A cell migrated by the old
+  `AshCell.Migrator` carries its `user_version` over only if each file keeps its old
+  number.
 - Do not use `mix ash.codegen` / generated AshSqlite migrations for cell resources.
 - A cell whose migration fails is **quarantined**: it does not start, and its tenant
   gets an error rather than a database in an unknown state.

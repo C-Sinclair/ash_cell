@@ -40,7 +40,7 @@ before handing it to a successor. That something is `Manager` plus `Registry` pl
 
 Everything here is process state, not persisted rows:
 
-- `Manager` holds fleet configuration (`repo`, `dir`, `encrypted?`, `migrator`, `max_resident`,
+- `Manager` holds fleet configuration (`repo`, `dir`, `encrypted?`, `migrations`, `max_resident`,
   `store`, `owner`, `snapshot`) plus `lru`, `quarantined`, `leases`, `shipping`, and `sealed?`.
 - `Registry` is a `Registry` (cell key → pid) plus a public ETS counter table for binds.
 - `Cell` holds `cell_key`, `repo`, `repo_pid`, `path`, `opened_at`, `schema_version`, `store`,

@@ -162,7 +162,7 @@ time, and nothing may rely on an inherited binding.
 | `AshCell.Cell` | GenServer owning one tenant's `Repo.start_link(name: nil, database: path)` instance |
 | `AshCell.Registry` / `Manager` | `tenant_id -> pid`; `DynamicSupervisor` with bounded resident set, LRU eviction, `max_resident_cells` / `max_rss_mb` |
 | `AshCell.Router` | Plug + LiveView `on_mount` resolving tenant → cell |
-| `AshCell.Migrator` | Per-cell `user_version` check and migration, with quarantine on failure |
+| `AshCell.Migrations` | Per-cell Ecto migrations, run on open, with quarantine on failure |
 | `AshCell.Vault` | Per-tenant key custody, SQLCipher key at open |
 | `AshCell.Telemetry` | Activation, hydration, eviction, query/write duration, resident count, RSS |
 
@@ -276,10 +276,9 @@ Stage 3 rather than pretended away:
   control. Note Turso's counter-position: "a database is a file rather than a process — no
   cold starts."
 - **Lazy migration failure is a single-tenant outage at an unwatched hour**, possibly
-  mid-migration: `AshCell.Migrator` issues its steps directly rather than wrapping them,
-  so a set that fails halfway leaves the cell part-migrated. SQLite does have
-  transactional DDL, so this is now fixable rather than inherent — it was not, when
-  `:transact` was off. Eager fleet migration on deploy should be primary; lazy is the
+  mid-migration. Each migration is its own transaction (`Ecto.Migrator`'s default, and
+  SQLite has transactional DDL), so a set that fails halfway leaves the cell at the last
+  migration that succeeded, not inside one. Eager fleet migration on deploy should be primary; lazy is the
   fallback; quarantine state required.
 
 ## 5. The demo

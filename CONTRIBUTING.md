@@ -87,8 +87,7 @@ cd demos/console && mix compile --warnings-as-errors
   verifier for `strategy :context`
 - `lib/ash_cell/lease.ex`, `replicator.ex`, `object_store.ex`, `ownership.ex` —
   durability and single-writer enforcement
-- `lib/ash_cell/migrator.ex` — per-cell schema versioning against `PRAGMA
-  user_version`
+- `lib/ash_cell/migrations.ex` — per-cell Ecto migrations, run when a cell opens
 
 ## Expectations for changes
 

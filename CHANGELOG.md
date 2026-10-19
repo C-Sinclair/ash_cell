@@ -41,6 +41,14 @@ out in a minor version bump and are called out here with what to change.
   starts its repo instance with `tenant:` set to its cell key. Set `:key` from
   `config[:tenant]` in an `init/2` override before calling `super/2`, and mark
   the fleet `encrypted?: true` to keep refusing a cell with no key.
+- **Cells migrate from Ecto migration files.** `AshCell.Migrator` and the
+  `:migrator` option are gone. Put `<version>_<name>.exs` files, each an
+  `Ecto.Migration`, in a directory and pass it as `tenants: [migrations_path: ...]`.
+  A cell migrated by `AshCell.Migrator` records every file up to its `PRAGMA
+  user_version` as run on first open, so give each old migration the same number.
+  `AshCell.Stream.migrate/1` is now `AshCell.Stream.Migration.up/0`, called from a
+  migration's `up/0`. Because `Ecto.Migrator` reads `repo.config/0`, a cell repo's
+  `init/2` also runs with no `:tenant`, so a key function must allow `nil`.
 - **Cell keys encode as `AshSqlite.MultiTenancy` encodes tenants.** Uppercase
   letters are escaped and the hex is lowercase, so `"Acme"` is `~41cme.db`. The
   old encoding let `"Acme"` and `"acme"` share one file on a case-insensitive
@@ -75,8 +83,8 @@ The working tree implements:
 - **Transactions.** Multi-statement atomicity within one cell via
   `AshCell.transaction/2`, using `BEGIN IMMEDIATE`. A transaction spanning two
   cells is refused rather than silently non-atomic.
-- **Per-cell migrations.** `AshCell.Migrator` versions each cell against
-  `PRAGMA user_version` and applies migrations on activation. A cell whose
+- **Per-cell migrations.** Each cell runs the fleet's Ecto migration files on
+  activation. A cell whose
   migration fails is quarantined. `mix ash_cell.migrate` migrates eagerly.
 - **Encryption at rest.** The repo's `init/2` opens each cell under that
   tenant's own SQLCipher key. `mix cipher.check` guards the silent failure mode

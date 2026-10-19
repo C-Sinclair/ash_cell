@@ -1,6 +1,7 @@
 # ADR-29 — Configure and start cells the way `AshSqlite.MultiTenancy` configures and starts tenants
 
 **Status:** accepted
+**Last changed:** 2026-10-19 — PR #246 merged as ash_sqlite `701530c`, and migrations followed: `AshCell.Migrator` is replaced by Ecto migration files under `tenants: [migrations_path: ...]`, run by `AshCell.Migrations`. A cell migrated by `AshCell.Migrator` carries its `PRAGMA user_version` over on first open. `Ecto.Migrator` reads `repo.config/0`, so `init/2` now runs with no `:tenant` whenever a fleet has migrations.
 **Date:** 2026-10-19
 **Deciders:** Conor Sinclair
 **Relates to:** [ADR-03](ADR-03-fork-ash-sqlite-narrowly.md) · [ADR-07](ADR-07-opaque-cell-keys.md) · [ADR-15](ADR-15-sqlcipher-from-the-system-build.md) · [ADR-22](ADR-22-where-the-tenancy-runtime-lives.md) · `lib/ash_cell/repo.ex` · `lib/ash_cell/cell.ex`
@@ -20,7 +21,8 @@ the way AshSqlite does. Three answers change now:
   `init/2`.
 
 Cell file names already follow AshSqlite's encoding ([ADR-07](ADR-07-opaque-cell-keys.md)).
-Migrations stay on `AshCell.Migrator` until PR #246 merges.
+Migrations are Ecto migration files in `tenants: [migrations_path: ...]`, as AshSqlite has them,
+since PR #246 merged.
 
 ## Context
 
@@ -81,12 +83,15 @@ the final configuration exists.
   call `repo.config/0` to find the repo's telemetry prefix, and that asked the collab_editor
   demo's vault for the key of `nil`, which crashed the demo at boot. `AshCell.ReadCache` now
   works out the prefix as Ecto does without calling `init/2`, and `test/repo_test.exs` "starting
-  the fleet runs init/2 only for cells" pins it. Application code that calls
-  `MyApp.CellRepo.config/0` still runs `init/2` with no cell, so a key function has to answer
-  `nil` for a `nil` tenant.
+  the fleet runs init/2 only for cells" pinned it. `Ecto.Migrator` calls `repo.config/0` itself,
+  though, so once a fleet has migrations `init/2` runs with no `:tenant` on every cell open, as
+  it does under `AshSqlite.MultiTenancy`. A key function has to answer `nil` for a `nil` tenant,
+  and every demo vault now does. `test/repo_test.exs` "AshCell itself runs init/2 only for cells"
+  and "Ecto.Migrator runs init/2 with no :tenant too" pin both halves.
 - **What stays open.** The fleet's processes are still named globally (`AshCell.Manager`,
   `AshCell.Registry`), not per repo as AshSqlite names its tenant supervisor. Two cell repos on
-  one node are therefore not supported. Migrations are not aligned.
+  one node are therefore not supported. `AshCell.Migrations.compile/1` is a copy of the
+  private `compile_migrations/1` in `AshSqlite.MultiTenancy.Supervisor`, not a call to it.
 - **What now depends on it.** Every demo's `application.ex` and encrypted cell repo, and
   `test/repo_test.exs`.
 
@@ -99,6 +104,10 @@ the final configuration exists.
 - `test/regression_test.exs` `AshCell.KeyFailClosedTest`: a cell whose `init/2` sets no key in an
   `encrypted?: true` fleet refuses to start and leaves no file. Other cells are unaffected, and a
   fleet without `encrypted?` opens it.
-- The shape followed is ash_sqlite PR #246 at `82c20bb`: `AshSqlite.MultiTenancy.Supervisor`'s
+- `test/migration_test.exs`: a cell at `PRAGMA user_version` 1 with no `schema_migrations` opens
+  on the `:test` set, records versions 1 to 3, and keeps its rows; running version 1 again would
+  have raised, because its table exists. A failed migration is quarantined as
+  `{:migration_failed, 2, Exqlite.Error}`, and the `:migrator` option is refused.
+- The shape followed is ash_sqlite PR #246 at `82c20bb`, merged as `701530c`: `AshSqlite.MultiTenancy.Supervisor`'s
   `child_spec/3` and `AshSqlite.MultiTenancy.Tenant.handle_continue/2`, which starts the instance
   with `tenant:`.
