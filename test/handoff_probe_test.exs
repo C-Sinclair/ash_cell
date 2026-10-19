@@ -32,7 +32,7 @@ defmodule AshCell.HandoffProbeTest do
       {AshCell,
        repo: AshCell.TestRepo,
        dir: dir,
-       migrator: AshCell.HandoffProbeMigrations,
+       migrations_path: AshCell.TestMigrations.path(:handoff_probe),
        store: store,
        owner: "node-a",
        snapshot: false}

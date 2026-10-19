@@ -40,7 +40,10 @@ defmodule AshCell.NonTenantedTest do
 
     start_supervised!(
       {AshCell,
-       repo: AshCell.TestRepo, dir: dir, migrator: AshCell.TestMigrations, max_resident: 8}
+       repo: AshCell.TestRepo,
+       dir: dir,
+       migrations_path: AshCell.TestMigrations.path(:test),
+       max_resident: 8}
     )
 
     on_exit(fn -> File.rm_rf!(dir) end)

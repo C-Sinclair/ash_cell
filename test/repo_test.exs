@@ -16,7 +16,9 @@ defmodule AshCell.RepoTest do
   end
 
   test "starting the repo starts the fleet from its tenants: option", %{dir: dir} do
-    start_supervised!({TestRepo, tenants: [dir: dir, migrator: AshCell.TestMigrations]})
+    start_supervised!(
+      {TestRepo, tenants: [dir: dir, migrations_path: AshCell.TestMigrations.path(:test)]}
+    )
 
     {:ok, _} = BoundPatient.create("Ada", tenant: "acme")
 
@@ -30,7 +32,10 @@ defmodule AshCell.RepoTest do
     Application.put_env(
       :ash_cell,
       TestRepo,
-      Keyword.put(previous, :tenants, dir: dir, migrator: AshCell.TestMigrations)
+      Keyword.put(previous, :tenants,
+        dir: dir,
+        migrations_path: AshCell.TestMigrations.path(:test)
+      )
     )
 
     on_exit(fn -> Application.put_env(:ash_cell, TestRepo, previous) end)
@@ -56,15 +61,16 @@ defmodule AshCell.RepoTest do
 
     on_exit(fn -> Application.delete_env(:ash_cell, :test_key_for) end)
 
-    start_supervised!({TestRepo, tenants: [dir: dir, migrator: AshCell.TestMigrations]})
+    start_supervised!(
+      {TestRepo, tenants: [dir: dir, migrations_path: AshCell.TestMigrations.path(:test)]}
+    )
+
     {:ok, _} = AshCell.Manager.ensure_started("acme:2026-10")
 
     assert_received {:init_saw, "acme:2026-10"}
   end
 
-  test "starting the fleet runs init/2 only for cells", %{dir: dir} do
-    # init/2 derives a cell's key from config[:tenant]. Run with no cell -- as
-    # `repo.config/0` does -- it would be asked for the key of nothing.
+  defp record_init_tenants do
     test = self()
 
     Application.put_env(:ash_cell, :test_key_for, fn tenant ->
@@ -73,12 +79,34 @@ defmodule AshCell.RepoTest do
     end)
 
     on_exit(fn -> Application.delete_env(:ash_cell, :test_key_for) end)
+  end
 
-    start_supervised!({TestRepo, tenants: [dir: dir, migrator: AshCell.TestMigrations]})
-    {:ok, _} = BoundPatient.create("Ada", tenant: "acme")
+  test "AshCell itself runs init/2 only for cells", %{dir: dir} do
+    # init/2 derives a cell's key from config[:tenant]. `AshCell.ReadCache` used to
+    # read the telemetry prefix through `repo.config/0`, which runs init/2 with no
+    # cell. With no migrations there is nothing else to call it.
+    record_init_tenants()
+
+    start_supervised!({TestRepo, tenants: [dir: dir]})
+    {:ok, _} = AshCell.Manager.ensure_started("acme")
 
     assert_received {:init_saw, "acme"}
     refute_received {:init_saw, nil}
+  end
+
+  test "Ecto.Migrator runs init/2 with no :tenant too, so a key function must allow nil",
+       %{dir: dir} do
+    # `Ecto.Migrator` reads `repo.config/0` itself, as it does under
+    # AshSqlite.MultiTenancy. The cell still opens, under the key its own init/2 set.
+    record_init_tenants()
+
+    start_supervised!(
+      {TestRepo, tenants: [dir: dir, migrations_path: AshCell.TestMigrations.path(:test)]}
+    )
+
+    assert {:ok, _} = BoundPatient.create("Ada", tenant: "acme")
+    assert_received {:init_saw, "acme"}
+    assert_received {:init_saw, nil}
   end
 
   test "init/2 keeps AshCell's options away from the adapter" do

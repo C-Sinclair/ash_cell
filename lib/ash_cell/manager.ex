@@ -23,7 +23,7 @@ defmodule AshCell.Manager do
     :repo,
     :dir,
     :encrypted?,
-    :migrator,
+    :migrations,
     :max_resident,
     :store,
     :owner,
@@ -278,7 +278,9 @@ defmodule AshCell.Manager do
       repo: Keyword.fetch!(opts, :repo),
       dir: Keyword.fetch!(opts, :dir),
       encrypted?: Keyword.get(opts, :encrypted?, false),
-      migrator: Keyword.get(opts, :migrator),
+      # Compiled once per fleet, not per cell, the way AshSqlite's tenant
+      # supervisor does.
+      migrations: AshCell.Migrations.compile(Keyword.get(opts, :migrations_path)),
       max_resident: Keyword.get(opts, :max_resident, @default_max_resident),
       store: Keyword.get(opts, :store),
       snapshot: AshCell.SnapshotPolicy.new(Keyword.get(opts, :snapshot), opts),
@@ -328,7 +330,7 @@ defmodule AshCell.Manager do
           repo: state.repo,
           path: path(state, cell_key),
           encrypted?: state.encrypted?,
-          migrator: state.migrator,
+          migrations: state.migrations,
           store: state.store,
           policy: state.snapshot
         ]

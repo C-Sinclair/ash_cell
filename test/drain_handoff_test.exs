@@ -33,7 +33,7 @@ defmodule AshCell.DrainHandoffTest do
       {AshCell,
        repo: AshCell.TestRepo,
        dir: dir,
-       migrator: AshCell.TestMigrations,
+       migrations_path: AshCell.TestMigrations.path(:test),
        store: store,
        owner: "node-a"}
     )

@@ -42,6 +42,15 @@ defmodule AshCell do
 
   @doc false
   def child_spec(opts) do
+    if Keyword.has_key?(opts, :migrator) do
+      raise ArgumentError, """
+      the `:migrator` option is gone. Cells are migrated from Ecto migration files:
+      pass `migrations_path:`, a directory of `<version>_<name>.exs` files, each an
+      `Ecto.Migration`. See `AshCell.Migrations` for how a cell migrated by
+      `AshCell.Migrator` carries its version over.
+      """
+    end
+
     %{id: __MODULE__, type: :supervisor, start: {AshCell.Supervisor, :start_link, [opts]}}
   end
 

@@ -15,7 +15,8 @@ defmodule AshCell.HoldersTest do
     dir = Path.join(System.tmp_dir!(), "ash_cell_hold_#{System.unique_integer([:positive])}")
 
     start_supervised!(
-      {AshCell, repo: AshCell.TestRepo, dir: dir, migrator: AshCell.TestMigrations}
+      {AshCell,
+       repo: AshCell.TestRepo, dir: dir, migrations_path: AshCell.TestMigrations.path(:test)}
     )
 
     on_exit(fn -> File.rm_rf!(dir) end)

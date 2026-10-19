@@ -59,7 +59,7 @@ defmodule AshCell.MixProject do
         {"CONTRIBUTING.md", title: "Contributing"}
       ],
       groups_for_modules: [
-        "Getting started": [AshCell, AshCell.Resource, AshCell.Migrator],
+        "Getting started": [AshCell, AshCell.Repo, AshCell.Resource, AshCell.Migrations],
         "Integration points": [
           AshCell.Binder,
           AshCell.CellKey,

@@ -24,7 +24,8 @@ defmodule AshCell.ObjectStoreTest do
     dir = Path.join(System.tmp_dir!(), "ash_cell_os_#{System.unique_integer([:positive])}")
 
     start_supervised!(
-      {AshCell, repo: AshCell.TestRepo, dir: dir, migrator: &AshCell.TestSchema.run/1}
+      {AshCell,
+       repo: AshCell.TestRepo, dir: dir, migrations_path: AshCell.TestMigrations.path(:test)}
     )
 
     tenant = unique_tenant("tenant")

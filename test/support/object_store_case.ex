@@ -62,7 +62,8 @@ defmodule AshCell.ObjectStoreCase do
   @doc false
   def start_fleet(dir) do
     start_supervised!(
-      {AshCell, repo: AshCell.TestRepo, dir: dir, migrator: &AshCell.TestSchema.run/1}
+      {AshCell,
+       repo: AshCell.TestRepo, dir: dir, migrations_path: AshCell.TestMigrations.path(:test)}
     )
   end
 

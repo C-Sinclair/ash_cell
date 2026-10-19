@@ -81,38 +81,6 @@ defmodule AshCell.Stream do
 
   # ── schema ────────────────────────────────────────────────────────────────
 
-  @doc """
-  Creates the two tables this needs, in the cell `repo_pid` is connected to.
-
-  Call it from the application's migrator; the library does not own the fleet's
-  migration list.
-
-      migration 3, &AshCell.Stream.migrate/1
-  """
-  def migrate(repo_pid) do
-    Ecto.Adapters.SQL.query!(repo_pid, """
-    CREATE TABLE IF NOT EXISTS ash_cell_stream_entries (
-      stream TEXT NOT NULL,
-      seq INTEGER NOT NULL,
-      payload BLOB NOT NULL,
-      at INTEGER NOT NULL,
-      PRIMARY KEY (stream, seq)
-    )
-    """)
-
-    Ecto.Adapters.SQL.query!(repo_pid, """
-    CREATE TABLE IF NOT EXISTS ash_cell_stream_meta (
-      stream TEXT PRIMARY KEY,
-      flushed_through INTEGER NOT NULL DEFAULT 0,
-      pending_start INTEGER,
-      pending_end INTEGER,
-      pending_digest TEXT
-    )
-    """)
-
-    :ok
-  end
-
   # ── object-store layout ───────────────────────────────────────────────────
 
   @doc "Where a stream's segments live. One namespace per stream, per cell."
@@ -613,7 +581,7 @@ defmodule AshCell.Stream do
   # `busy_timeout` — and every write here reads before it writes.
   #
   # This was hand-rolled as raw `BEGIN IMMEDIATE`/`COMMIT` against the connection
-  # pid first, which is what `AshCell.Migrator` does, and it is wrong anywhere the
+  # pid first, which is what the old `AshCell.Migrator` did, and it is wrong anywhere the
   # migrator is not: raw statements do not hold the connection, so an appender and
   # a flusher in two processes interleaved their transactions on the single pooled
   # connection and SQLite refused with "cannot start a transaction within a

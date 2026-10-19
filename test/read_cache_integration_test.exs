@@ -18,7 +18,10 @@ defmodule AshCell.ReadCacheIntegrationTest do
 
     start_supervised!(
       {AshCell,
-       repo: AshCell.TestRepo, dir: dir, max_resident: 3, migrator: &AshCell.TestSchema.run/1}
+       repo: AshCell.TestRepo,
+       dir: dir,
+       max_resident: 3,
+       migrations_path: AshCell.TestMigrations.path(:test)}
     )
 
     on_exit(fn -> File.rm_rf!(dir) end)

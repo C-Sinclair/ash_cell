@@ -56,7 +56,7 @@ defmodule AshCell.Cell do
     cell_key = Keyword.fetch!(opts, :cell_key)
     repo = Keyword.fetch!(opts, :repo)
     path = Keyword.fetch!(opts, :path)
-    migrator = Keyword.get(opts, :migrator)
+    migrations = Keyword.get(opts, :migrations, [])
     policy = Keyword.get(opts, :policy) || %AshCell.SnapshotPolicy{enabled?: false}
 
     File.mkdir_p!(Path.dirname(path))
@@ -78,7 +78,8 @@ defmodule AshCell.Cell do
     ]
 
     with {:ok, repo_pid} <- repo.start_link(repo_opts),
-         {:ok, version} <- migrate(repo, repo_pid, migrator) do
+         # Before init/1 returns, so no statement reaches a half-migrated schema.
+         {:ok, version} <- AshCell.Migrations.run(repo, repo_pid, migrations) do
       now = System.monotonic_time(:millisecond)
       AshCell.Registry.put_repo(cell_key, repo_pid)
 
@@ -102,26 +103,6 @@ defmodule AshCell.Cell do
        }}
     else
       {:error, reason} -> {:stop, reason}
-    end
-  end
-
-  # Migration runs before the cell is available, so a tenant is never served
-  # against a half-migrated schema. A failure stops the cell rather than letting
-  # it answer queries: being down is recoverable, serving an unknown schema is not.
-  defp migrate(repo, repo_pid, migrator) do
-    previous = repo.get_dynamic_repo()
-    repo.put_dynamic_repo(repo_pid)
-
-    try do
-      AshCell.Migrator.apply_to(repo_pid, AshCell.Migrator.normalise(migrator))
-    rescue
-      e ->
-        # Deliberately no tenant data in the message; a migration failure is
-        # about schema, and the tenant id is enough to find the cell.
-        Logger.error("cell migration raised: #{inspect(e.__struct__)}")
-        {:error, {:migration_failed, e.__struct__}}
-    after
-      repo.put_dynamic_repo(previous)
     end
   end
 

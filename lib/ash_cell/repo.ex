@@ -10,7 +10,11 @@ defmodule AshCell.Repo do
   before calling `super/2`.
 
       config :my_app, MyApp.CellRepo,
-        tenants: [dir: "/data/cells", migrator: MyApp.CellMigrations, encrypted?: true]
+        tenants: [
+          dir: "/data/cells",
+          migrations_path: "priv/cell_migrations",
+          encrypted?: true
+        ]
 
       defmodule MyApp.CellRepo do
         use AshCell.Repo, otp_app: :my_app

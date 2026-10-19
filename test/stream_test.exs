@@ -36,7 +36,7 @@ defmodule AshCell.StreamTest do
       {AshCell,
        repo: AshCell.TestRepo,
        dir: dir,
-       migrator: AshCell.StreamMigrations,
+       migrations_path: AshCell.TestMigrations.path(:stream),
        store: store,
        owner: "node-a",
        snapshot: false}
