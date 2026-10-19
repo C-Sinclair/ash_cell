@@ -52,7 +52,7 @@ compactions on one document and asserts every single update survives.
 
 | Claim | Where to look |
 |---|---|
-| **The cell key is a policy, not an identity.** A document id becomes the cell `doc:<uuid>`, on disk as `doc~3A<uuid>.db`. The `:` never reaches the filesystem and the encoding is reversible, so two keys can never share a file. | `lib/collab_editor/cell_key.ex`, and `ls priv/cells` |
+| **The cell key is a policy, not an identity.** A document id becomes the cell `doc:<uuid>`, on disk as `doc~3a<uuid>.db`. The `:` never reaches the filesystem and the encoding is reversible, so two keys can never share a file. | `lib/collab_editor/cell_key.ex`, and `ls priv/cells` |
 | **Isolation is physical at record granularity.** One document's entire edit history is in one file. There is no `document_id` column anywhere, because there is nothing to scope. | `lib/collab_editor/cells/schema.ex` |
 | **Every document has its own encryption key**, covering its whole history rather than just current state. Shredding one key leaves those bytes on disk permanently unreadable and touches no other document. | `lib/collab_editor/cells/vault.ex`, `encryption_test.exs` |
 | **Deleting a document is `rm`.** No dead tuples still holding the text of something somebody asked you to delete. | `Editing.delete_document/1` |

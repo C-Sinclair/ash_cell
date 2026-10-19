@@ -85,6 +85,9 @@ false. Do not reintroduce the superseded position:
   indistinguishable from an explicitly written value at transformer time, so the "set it unless the
   user did" transformer read the fork's `default: false` as the user's choice. Writes were
   non-atomic with nothing raising.
+- **[ADR-07](ADR-07-opaque-cell-keys.md)** — the cell-key encoding was believed injective because
+  it was injective on strings. Uppercase letters passed through, and on a case-insensitive
+  filesystem `"Acme"` and `"acme"` named one file, so two cells shared a database.
 - **[ADR-23](ADR-23-merge-by-fast-forward-or-refuse.md)** — SQLite's file change counter was used
   as the fast-forward test because it is documented to move on every write transaction. In WAL
   mode it does not, so merge saw no divergence in a rewritten database and discarded the origin's

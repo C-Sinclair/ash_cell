@@ -19,7 +19,7 @@ defmodule CollabEditorWeb.EditorLiveTest do
     {:ok, _view, html} = live(conn, ~p"/")
 
     assert html =~ "Wire test"
-    assert html =~ "doc~3A" <> doc.id
+    assert html =~ "doc~3a" <> doc.id
   end
 
   test "the editor is handed the document's merged state, not its history",

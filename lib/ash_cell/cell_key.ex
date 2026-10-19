@@ -71,16 +71,21 @@ defmodule AshCell.CellKey do
   Interpolating unescaped is worse: a key of `"../../etc/x"` escapes the cell
   directory entirely.
 
-  So `encode/1` is a reversible escape rather than a filter. Unreserved characters
-  pass through, everything else becomes `~` plus its bytes in hex. Common keys
-  stay readable, which matters for anyone who has to `ls` a cell directory during
-  an incident:
+  So `encode/1` is a reversible escape rather than a filter. Lowercase letters,
+  digits, `-`, `_` and `.` pass through, and every other byte becomes `~` plus its
+  value in lowercase hex. Uppercase letters are escaped too, because APFS and NTFS
+  are case-insensitive by default, and there `"Acme.db"` and `"acme.db"` are one
+  file. Common keys stay readable, which matters for anyone who has to `ls` a cell
+  directory during an incident:
 
       "acme"          -> "acme"
-      "acme:2026-08"  -> "acme~3A2026-08"
-      "../../etc/x"   -> "..~2F..~2Fetc~2Fx"
+      "acme:2026-08"  -> "acme~3a2026-08"
+      "Acme"          -> "~41cme"
+      "../../etc/x"   -> "..~2f..~2fetc~2fx"
 
-  Because `~` is itself escaped, distinct keys always encode distinctly.
+  Because `~` is itself escaped, distinct keys always encode distinctly. This is
+  the encoding `AshSqlite.MultiTenancy` uses for its tenant files, so a cell key
+  names the same file under either.
   """
 
   @doc """
@@ -111,19 +116,32 @@ defmodule AshCell.CellKey do
   @spec resolver() :: module()
   def resolver, do: Application.get_env(:ash_cell, :cell_key, @default_resolver)
 
-  @doc """
-  Encodes a cell key as a path-safe string, injectively.
+  # 255 is the usual per-name limit. `-journal` is the longest suffix SQLite adds to
+  # a database's name, and `.db` is ours.
+  @max_encoded_bytes 255 - byte_size(".db") - byte_size("-journal")
 
-  Raises if the key is not a non-empty binary. Resolvers are responsible for
-  producing binaries: allowing atoms too would break injectivity, since `:acme`
-  and `"acme"` are different cells that would encode identically.
+  @doc """
+  Encodes a cell key as a path-safe string, injectively, even on a
+  case-insensitive filesystem.
+
+  Raises if the key is not a non-empty binary, or if it encodes to more than 244
+  bytes, which would not fit in a file name with its SQLite suffixes. Resolvers are
+  responsible for producing binaries: allowing atoms too would break injectivity,
+  since `:acme` and `"acme"` are different cells that would encode identically.
   """
   @spec encode(binary()) :: binary()
   def encode(cell_key) when is_binary(cell_key) and byte_size(cell_key) > 0 do
-    cell_key
-    |> :binary.bin_to_list()
-    |> Enum.map(&encode_byte/1)
-    |> IO.iodata_to_binary()
+    encoded = cell_key |> :binary.bin_to_list() |> Enum.map_join(&encode_byte/1)
+
+    if byte_size(encoded) > @max_encoded_bytes do
+      raise ArgumentError, """
+      cell key #{inspect(cell_key)} encodes to #{byte_size(encoded)} bytes, and a \
+      database name can be at most #{@max_encoded_bytes}. Use a shorter identifier, \
+      such as a slug or a UUID, in the cell key.
+      """
+    end
+
+    encoded
   end
 
   def encode(other) do
@@ -137,16 +155,20 @@ defmodule AshCell.CellKey do
     """
   end
 
-  # Unreserved per RFC 3986, minus `~`, which is the escape character and so must
-  # itself be escaped for the encoding to stay reversible.
-  defp encode_byte(byte)
-       when byte in ?a..?z or byte in ?A..?Z or byte in ?0..?9 or byte in [?-, ?., ?_] do
-    byte
-  end
+  # Unreserved per RFC 3986 without uppercase letters, and without `~`, which is the
+  # escape character and so must itself be escaped for the encoding to stay
+  # reversible.
+  defp encode_byte(byte) when byte in ?a..?z or byte in ?0..?9 or byte in [?-, ?., ?_],
+    do: <<byte>>
 
   defp encode_byte(byte) do
-    ["~", byte |> Integer.to_string(16) |> String.pad_leading(2, "0") |> String.upcase()]
+    <<hi::4, lo::4>> = <<byte>>
+    <<?~, hex(hi), hex(lo)>>
   end
+
+  # Lowercase, so two encodings never differ only by case.
+  defp hex(nibble) when nibble < 10, do: ?0 + nibble
+  defp hex(nibble), do: ?a + nibble - 10
 
   @doc """
   Decodes a string produced by `encode/1`.
@@ -159,11 +181,10 @@ defmodule AshCell.CellKey do
 
   defp decode(<<>>, acc), do: {:ok, acc |> Enum.reverse() |> IO.iodata_to_binary()}
 
-  defp decode(<<"~", hi, lo, rest::binary>>, acc) do
-    case Integer.parse(<<hi, lo>>, 16) do
-      {byte, ""} -> decode(rest, [byte | acc])
-      _ -> :error
-    end
+  # Lowercase hex only, so every cell key has exactly one encoded form.
+  defp decode(<<"~", hi, lo, rest::binary>>, acc)
+       when (hi in ?0..?9 or hi in ?a..?f) and (lo in ?0..?9 or lo in ?a..?f) do
+    decode(rest, [String.to_integer(<<hi, lo>>, 16) | acc])
   end
 
   defp decode(<<"~", _::binary>>, _acc), do: :error

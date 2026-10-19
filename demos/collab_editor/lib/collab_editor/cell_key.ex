@@ -11,7 +11,7 @@ defmodule CollabEditor.CellKey do
   prefix, and a namespace makes it possible to keep other cuts in the same store
   later — `presence:<room>`, `audit:<year>` — without two schemes colliding in one
   directory. `AshCell.CellKey.encode/1` escapes the `:` on the way to disk, so the
-  file is `doc~3A<uuid>.db` and the mapping stays injective.
+  file is `doc~3a<uuid>.db` and the mapping stays injective.
 
   ## Why a document is a defensible cell
 

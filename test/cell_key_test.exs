@@ -44,7 +44,35 @@ defmodule AshCell.CellKeyTest do
     end
 
     test "a composite key escapes its separator but stays legible" do
-      assert CellKey.encode("acme:2026-08") == "acme~3A2026-08"
+      assert CellKey.encode("acme:2026-08") == "acme~3a2026-08"
+    end
+
+    test "keys that differ only by case still differ on a case-insensitive filesystem" do
+      # APFS and NTFS fold case, so "Acme" and "acme" would name one file there.
+      assert CellKey.encode("Acme") == "~41cme"
+
+      refute String.downcase(CellKey.encode("Acme")) ==
+               String.downcase(CellKey.encode("acme"))
+    end
+
+    test "matches AshSqlite.MultiTenancy's tenant file names" do
+      # Vectors from that encoder, so a cell key and the same tenant name one file.
+      assert CellKey.encode("a:b") == "a~3ab"
+      assert CellKey.encode("a_b") == "a_b"
+      assert CellKey.encode("../../etc/x") == "..~2f..~2fetc~2fx"
+      assert CellKey.encode("Acme") == "~41cme"
+    end
+
+    test "a key too long for a file name is refused" do
+      assert String.duplicate("a", 244) |> CellKey.encode() |> byte_size() == 244
+
+      assert_raise ArgumentError, ~r/encodes to 245 bytes/, fn ->
+        CellKey.encode(String.duplicate("a", 245))
+      end
+
+      assert_raise ArgumentError, ~r/encodes to 300 bytes/, fn ->
+        CellKey.encode(String.duplicate("A", 100))
+      end
     end
 
     test "path traversal cannot escape the cell directory" do
@@ -53,13 +81,13 @@ defmodule AshCell.CellKeyTest do
       encoded = CellKey.encode("../../etc/passwd")
 
       refute String.contains?(encoded, "/")
-      assert Path.join("/cells", encoded <> ".db") == "/cells/..~2F..~2Fetc~2Fpasswd.db"
+      assert Path.join("/cells", encoded <> ".db") == "/cells/..~2f..~2fetc~2fpasswd.db"
     end
 
     test "the escape character is itself escaped, which is what makes it reversible" do
-      # Without this, "a~3Ab" and "a:b" would encode identically.
-      assert CellKey.encode("a~3Ab") == "a~7E3Ab"
-      refute CellKey.encode("a~3Ab") == CellKey.encode("a:b")
+      # Without this, "a~3ab" and "a:b" would encode identically.
+      assert CellKey.encode("a~3ab") == "a~7e3ab"
+      refute CellKey.encode("a~3ab") == CellKey.encode("a:b")
     end
 
     test "sanitising would have collided here, and escaping does not" do
@@ -76,7 +104,7 @@ defmodule AshCell.CellKeyTest do
         "a_b",
         "a/b",
         "a~b",
-        "a~2Fb",
+        "a~2fb",
         "A",
         "a.b",
         "a b",
@@ -103,6 +131,7 @@ defmodule AshCell.CellKeyTest do
       assert :error = CellKey.decode("a~ZZb")
       assert :error = CellKey.decode("a~2")
       assert :error = CellKey.decode("a~")
+      assert :error = CellKey.decode("a~3A")
     end
 
     test "an empty or non-binary key is refused, not coerced" do
@@ -153,7 +182,7 @@ defmodule AshCell.CellKeyTest do
     end
 
     test "its output still has to encode safely" do
-      assert CellKey.resolve({"acme", ~D[2026-08-21]}) |> CellKey.encode() == "acme~3A2026-08"
+      assert CellKey.resolve({"acme", ~D[2026-08-21]}) |> CellKey.encode() == "acme~3a2026-08"
     end
   end
 
@@ -166,5 +195,38 @@ defmodule AshCell.CellKeyTest do
     test "fails at encode time rather than producing a colliding filename" do
       assert_raise ArgumentError, fn -> "acme" |> CellKey.resolve() |> CellKey.encode() end
     end
+  end
+end
+
+defmodule AshCell.CellKeyFilesTest do
+  @moduledoc """
+  The encoding checked against a real filesystem, where it can collide in ways a
+  comparison of strings cannot see.
+  """
+  use ExUnit.Case, async: false
+
+  alias AshCell.Test.BoundPatient
+
+  setup do
+    dir = Path.join(System.tmp_dir!(), "ash_cell_keyfs_#{System.unique_integer([:positive])}")
+
+    start_supervised!(
+      {AshCell,
+       repo: AshCell.TestRepo, dir: dir, migrator: AshCell.TestMigrations, max_resident: 8}
+    )
+
+    on_exit(fn -> File.rm_rf!(dir) end)
+    {:ok, dir: dir}
+  end
+
+  test "keys that differ only by case get separate databases", %{dir: dir} do
+    # APFS and NTFS are case-insensitive by default, so "Acme.db" and "acme.db"
+    # are one file there, and two cells would share it with nothing raising.
+    {:ok, _} = BoundPatient.create("Upper", tenant: "Acme")
+    {:ok, _} = BoundPatient.create("Lower", tenant: "acme")
+
+    assert {:ok, [%{name: "Upper"}]} = BoundPatient.read(tenant: "Acme")
+    assert {:ok, [%{name: "Lower"}]} = BoundPatient.read(tenant: "acme")
+    assert dir |> File.ls!() |> Enum.count(&String.ends_with?(&1, ".db")) == 2
   end
 end

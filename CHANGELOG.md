@@ -26,6 +26,13 @@ out in a minor version bump and are called out here with what to change.
   count is read from each cell's connection pool, the read cache's write bracket
   is closed from the repo's query telemetry, and `AshCell.bound_cell/0` is read
   off Ecto's binding. `AshCell.ReadCache.start_link/1` takes `repo:`.
+- **Cell keys encode as `AshSqlite.MultiTenancy` encodes tenants.** Uppercase
+  letters are escaped and the hex is lowercase, so `"Acme"` is `~41cme.db`. The
+  old encoding let `"Acme"` and `"acme"` share one file on a case-insensitive
+  filesystem. A cell key containing uppercase letters or escaped bytes now names a
+  different file and object-store prefix, so existing cells with such keys must be
+  renamed, or restored under the new prefix, before they are opened. A key that
+  encodes to more than 244 bytes is refused.
 - **A resource without `strategy :context` on a cell repo is refused.** AshSqlite
   reports it at compile time and raises on its first statement. It used to follow
   whatever cell the process had bound.
