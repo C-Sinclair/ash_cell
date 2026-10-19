@@ -13,7 +13,7 @@ defmodule Relay.Application do
       {Phoenix.PubSub, name: Relay.PubSub},
       {Registry, keys: :unique, name: Relay.GeneratorRegistry},
       {DynamicSupervisor, strategy: :one_for_one, name: Relay.GeneratorSupervisor},
-      {AshCell, Relay.Cells.config()},
+      {Relay.CellRepo, tenants: Relay.Cells.config()},
       RelayWeb.Endpoint
     ]
 

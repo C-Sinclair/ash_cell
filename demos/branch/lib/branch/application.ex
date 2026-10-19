@@ -15,7 +15,7 @@ defmodule Branch.Application do
       # Start a worker by calling: Branch.Worker.start_link(arg)
       # {Branch.Worker, arg},
       # Start to serve requests, typically the last entry
-      {AshCell, Branch.Cells.config()},
+      {Branch.CellRepo, tenants: Branch.Cells.config()},
       BranchWeb.Endpoint
     ]
 

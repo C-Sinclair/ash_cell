@@ -130,7 +130,8 @@ GET /api/repos/:owner/:name/search?q=...              message search, no clone
 
 ## Server: one cell per repo
 
-`{AshCell, repo: Vcs.CellRepo, dir: ..., key_for: &Vcs.Vault.key_for/1, migrator: Vcs.Cells.Schema}`.
+`{Vcs.CellRepo, tenants: [dir: ..., encrypted?: true, migrator: Vcs.Cells.Schema]}`, with each
+cell's key set from `Vcs.Vault.key_for/1` in `Vcs.CellRepo.init/2`.
 The tenant id is the repo's full name, `owner/name`. Resources use `AshCell.Resource` +
 `multitenancy strategy :context`, so `Ash.read!(Vcs.Store.Commit, tenant: "conor/demo")` routes
 itself; nothing inherits a binding.

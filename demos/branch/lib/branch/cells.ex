@@ -29,7 +29,6 @@ defmodule Branch.Cells do
 
   def config do
     [
-      repo: Branch.CellRepo,
       dir: Application.get_env(:ash_cell, :dir, "priv/cells"),
       migrator: Branch.Schema,
       store: store(),

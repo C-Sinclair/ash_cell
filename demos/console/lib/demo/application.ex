@@ -11,12 +11,13 @@ defmodule Demo.Application do
       DemoWeb.Telemetry,
       Demo.Repo,
       Demo.Cells.Vault,
-      {AshCell,
-       repo: Demo.CellRepo,
-       dir: Application.get_env(:demo, :cell_dir, "priv/cells"),
-       max_resident: 64,
-       key_for: &Demo.Cells.Vault.key_for/1,
-       migrator: Demo.Cells.Schema},
+      {Demo.CellRepo,
+       tenants: [
+         dir: Application.get_env(:demo, :cell_dir, "priv/cells"),
+         max_resident: 64,
+         encrypted?: true,
+         migrator: Demo.Cells.Schema
+       ]},
       {DNSCluster, query: Application.get_env(:demo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Demo.PubSub},
       # Start a worker by calling: Demo.Worker.start_link(arg)

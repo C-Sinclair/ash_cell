@@ -7,13 +7,14 @@ defmodule Vcs.Application do
     store = object_store()
 
     children = [
-      {AshCell,
-       repo: Vcs.CellRepo,
-       dir: Application.get_env(:vcs, :cell_dir, "priv/cells"),
-       max_resident: 64,
-       key_for: &Vcs.Vault.key_for/1,
-       migrator: Vcs.Cells.Schema,
-       store: store},
+      {Vcs.CellRepo,
+       tenants: [
+         dir: Application.get_env(:vcs, :cell_dir, "priv/cells"),
+         max_resident: 64,
+         encrypted?: true,
+         migrator: Vcs.Cells.Schema,
+         store: store
+       ]},
       # After AshCell, so a sweep never runs before the fleet it sweeps exists.
       {Vcs.Snapshotter,
        store: store, interval_ms: Application.get_env(:vcs, :snapshot_interval_ms, 60_000)},

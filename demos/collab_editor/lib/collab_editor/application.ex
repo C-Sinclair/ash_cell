@@ -8,12 +8,13 @@ defmodule CollabEditor.Application do
       CollabEditorWeb.Telemetry,
       {Phoenix.PubSub, name: CollabEditor.PubSub},
       CollabEditorWeb.Presence,
-      {AshCell,
-       repo: CollabEditor.CellRepo,
-       dir: Application.get_env(:collab_editor, :cell_dir, "priv/cells"),
-       max_resident: 128,
-       key_for: &CollabEditor.Cells.Vault.key_for/1,
-       migrator: CollabEditor.Cells.Schema},
+      {CollabEditor.CellRepo,
+       tenants: [
+         dir: Application.get_env(:collab_editor, :cell_dir, "priv/cells"),
+         max_resident: 128,
+         encrypted?: true,
+         migrator: CollabEditor.Cells.Schema
+       ]},
       CollabEditorWeb.Endpoint
     ]
 

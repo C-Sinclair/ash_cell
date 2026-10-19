@@ -14,7 +14,6 @@ defmodule Rollout.Cells do
 
   def config do
     [
-      repo: Rollout.CellRepo,
       dir: Application.get_env(:ash_cell, :dir, "priv/cells"),
       migrator: Rollout.Schema,
       max_resident: 64

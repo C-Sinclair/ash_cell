@@ -23,7 +23,6 @@ defmodule Relay.Cells do
 
   def config do
     [
-      repo: Relay.CellRepo,
       dir: Application.get_env(:ash_cell, :dir, "priv/cells"),
       migrator: Relay.Schema,
       store: store(),

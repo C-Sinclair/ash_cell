@@ -12,12 +12,13 @@ defmodule Shroud.Application do
       Shroud.Repo,
       Shroud.Cells.Vault,
       Shroud.Auth.ChallengeStore,
-      {AshCell,
-       repo: Shroud.CellRepo,
-       dir: Application.get_env(:shroud, :cell_dir, "priv/cells"),
-       max_resident: Application.get_env(:shroud, :max_resident, 64),
-       key_for: &Shroud.Cells.Vault.key_for/1,
-       migrator: Shroud.Cells.Schema},
+      {Shroud.CellRepo,
+       tenants: [
+         dir: Application.get_env(:shroud, :cell_dir, "priv/cells"),
+         max_resident: Application.get_env(:shroud, :max_resident, 64),
+         encrypted?: true,
+         migrator: Shroud.Cells.Schema
+       ]},
       {DNSCluster, query: Application.get_env(:shroud, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Shroud.PubSub},
       # Start a worker by calling: Shroud.Worker.start_link(arg)

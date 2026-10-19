@@ -14,7 +14,7 @@ defmodule Rollout.Application do
       # Start a worker by calling: Rollout.Worker.start_link(arg)
       # {Rollout.Worker, arg},
       # Start to serve requests, typically the last entry
-      {AshCell, Rollout.Cells.config()},
+      {Rollout.CellRepo, tenants: Rollout.Cells.config()},
       RolloutWeb.Endpoint
     ]
 
