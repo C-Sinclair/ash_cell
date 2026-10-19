@@ -51,5 +51,4 @@ config :rollout, Rollout.CellRepo,
 config :ash_cell,
   repo: Rollout.CellRepo,
   dir: "priv/cells",
-  migrator: Rollout.Schema,
   max_resident: 64

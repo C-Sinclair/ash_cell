@@ -30,7 +30,7 @@ defmodule Branch.Cells do
   def config do
     [
       dir: Application.get_env(:ash_cell, :dir, "priv/cells"),
-      migrator: Branch.Schema,
+      migrations_path: Branch.Schema.migrations_path(),
       store: store(),
       owner: to_string(node()),
       max_resident: 64,

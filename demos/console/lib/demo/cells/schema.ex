@@ -10,43 +10,10 @@ defmodule Demo.Cells.Schema do
 
   Run `mix ash_cell.migrate --tenants ...` at deploy time so failures surface
   while somebody is watching. Lazy activation is the fallback, not the plan.
+
+  The migrations themselves are the files in `priv/cell_migrations`.
   """
-  use AshCell.Migrator
 
-  migration(1, """
-  CREATE TABLE patients (
-    id TEXT PRIMARY KEY,
-    name TEXT NOT NULL,
-    mrn TEXT,
-    birth_year INTEGER,
-    risk_score INTEGER DEFAULT 0
-  )
-  """)
-
-  migration(2, """
-  CREATE TABLE encounters (
-    id TEXT PRIMARY KEY,
-    patient_id TEXT,
-    reason TEXT,
-    occurred_on TEXT
-  )
-  """)
-
-  migration(3, """
-  CREATE TABLE observations (
-    id TEXT PRIMARY KEY,
-    encounter_id TEXT,
-    code TEXT,
-    value INTEGER
-  )
-  """)
-
-  migration(4, fn repo_pid ->
-    for sql <- [
-          "CREATE INDEX encounters_patient ON encounters(patient_id)",
-          "CREATE INDEX observations_encounter ON observations(encounter_id)"
-        ] do
-      Ecto.Adapters.SQL.query!(repo_pid, sql, [])
-    end
-  end)
+  @doc "Where this demo's cell migrations are, for the fleet's `migrations_path:`."
+  def migrations_path, do: Application.app_dir(:demo, "priv/cell_migrations")
 end

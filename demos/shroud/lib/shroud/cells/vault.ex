@@ -47,6 +47,9 @@ defmodule Shroud.Cells.Vault do
   cell then tries to open an encrypted database with no key and fails, exactly as
   it would if the key were genuinely gone.
   """
+  # `Ecto.Migrator` reads the repo's config, and so runs its init/2, with no cell.
+  def key_for(nil), do: nil
+
   def key_for(user_id) do
     if destroyed?(user_id), do: nil, else: derive(user_id)
   end

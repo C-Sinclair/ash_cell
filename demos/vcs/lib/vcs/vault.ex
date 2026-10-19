@@ -14,6 +14,9 @@ defmodule Vcs.Vault do
   """
 
   @doc "The key for `repo_name`, or `nil` once revoked."
+  # `Ecto.Migrator` reads the repo's config, and so runs its init/2, with no cell.
+  def key_for(nil), do: nil
+
   def key_for(repo_name) do
     if revoked?(repo_name), do: nil, else: derive(repo_name)
   end

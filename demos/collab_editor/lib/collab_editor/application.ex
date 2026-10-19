@@ -13,7 +13,7 @@ defmodule CollabEditor.Application do
          dir: Application.get_env(:collab_editor, :cell_dir, "priv/cells"),
          max_resident: 128,
          encrypted?: true,
-         migrator: CollabEditor.Cells.Schema
+         migrations_path: CollabEditor.Cells.Schema.migrations_path()
        ]},
       CollabEditorWeb.Endpoint
     ]

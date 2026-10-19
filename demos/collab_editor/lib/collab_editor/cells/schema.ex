@@ -26,32 +26,10 @@ defmodule CollabEditor.Cells.Schema do
   between one node's read and its delete is gone. A cell is a single serialising
   writer per document, so the whole sequence is one transaction on one connection
   with no coordination — see `CollabEditor.Editing.compact/1`.
+
+  The migrations themselves are the files in `priv/cell_migrations`.
   """
-  use AshCell.Migrator
 
-  migration(1, """
-  CREATE TABLE document (
-    id TEXT PRIMARY KEY,
-    title TEXT NOT NULL,
-    created_at TEXT NOT NULL
-  )
-  """)
-
-  migration(2, """
-  CREATE TABLE updates (
-    seq INTEGER PRIMARY KEY,
-    payload BLOB NOT NULL,
-    client_id TEXT,
-    at TEXT NOT NULL
-  )
-  """)
-
-  migration(3, """
-  CREATE TABLE snapshots (
-    id TEXT PRIMARY KEY,
-    state BLOB NOT NULL,
-    through_seq INTEGER NOT NULL,
-    updated_at TEXT NOT NULL
-  )
-  """)
+  @doc "Where this demo's cell migrations are, for the fleet's `migrations_path:`."
+  def migrations_path, do: Application.app_dir(:collab_editor, "priv/cell_migrations")
 end

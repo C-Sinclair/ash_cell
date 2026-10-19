@@ -12,7 +12,7 @@ defmodule Vcs.Application do
          dir: Application.get_env(:vcs, :cell_dir, "priv/cells"),
          max_resident: 64,
          encrypted?: true,
-         migrator: Vcs.Cells.Schema,
+         migrations_path: Vcs.Cells.Schema.migrations_path(),
          store: store
        ]},
       # After AshCell, so a sweep never runs before the fleet it sweeps exists.

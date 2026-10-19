@@ -231,5 +231,5 @@ Named plainly, because the demo is only useful if the edges are.
 | `lib/rollout/channel/` | the resources inside a channel cell: `Release`, `Artifact`, `Pointer`, `Promotion` |
 | `lib/rollout/resolve.ex` | the read path — check-in to manifest, cached per channel epoch |
 | `lib/rollout/control.ex` | the write path — cut, promote, ramp, rollback, and the GC query |
-| `lib/rollout/schema.ex` | the cell schema, versioned against `PRAGMA user_version` |
+| `lib/rollout/schema.ex`, `priv/cell_migrations/` | the cell schema, as Ecto migration files recorded in `schema_migrations` |
 | `lib/rollout/cells.ex` | which channels exist. No global registry: a channel *is* its cell, and standing up Postgres to map a name to itself would prove nothing `console` has not already proved |

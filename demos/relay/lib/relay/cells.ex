@@ -24,7 +24,7 @@ defmodule Relay.Cells do
   def config do
     [
       dir: Application.get_env(:ash_cell, :dir, "priv/cells"),
-      migrator: Relay.Schema,
+      migrations_path: Relay.Schema.migrations_path(),
       store: store(),
       max_resident: 64
     ]

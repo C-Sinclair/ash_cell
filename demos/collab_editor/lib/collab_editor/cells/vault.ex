@@ -13,6 +13,9 @@ defmodule CollabEditor.Cells.Vault do
   """
 
   @doc "The SQLCipher key literal for a cell, or `nil` if the document is shredded."
+  # `Ecto.Migrator` reads the repo's config, and so runs its init/2, with no cell.
+  def key_for(nil), do: nil
+
   def key_for(cell_key) do
     if shredded?(cell_key), do: nil, else: derive(cell_key)
   end

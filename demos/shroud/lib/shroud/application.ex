@@ -17,7 +17,7 @@ defmodule Shroud.Application do
          dir: Application.get_env(:shroud, :cell_dir, "priv/cells"),
          max_resident: Application.get_env(:shroud, :max_resident, 64),
          encrypted?: true,
-         migrator: Shroud.Cells.Schema
+         migrations_path: Shroud.Cells.Schema.migrations_path()
        ]},
       {DNSCluster, query: Application.get_env(:shroud, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Shroud.PubSub},

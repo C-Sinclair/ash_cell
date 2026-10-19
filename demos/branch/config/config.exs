@@ -68,5 +68,4 @@ config :branch, :object_store,
 config :ash_cell,
   repo: Branch.CellRepo,
   dir: "priv/cells",
-  migrator: Branch.Schema,
   max_resident: 64

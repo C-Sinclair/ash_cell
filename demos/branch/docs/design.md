@@ -59,8 +59,8 @@ separable unit.
 
 ## Data model
 
-Inside a cell: whatever the user's SQL creates. The migrator installs only a `_branch_meta` marker
-table so `PRAGMA user_version` has a baseline. This is the one demo whose schema is *data*, which
+Inside a cell: whatever the user's SQL creates. The migrations install only a `_branch_meta` marker
+table so `schema_migrations` has a baseline. This is the one demo whose schema is *data*, which
 is what makes a branch able to carry a schema change.
 
 Outside, in `Branch.CatalogRepo` — its own repo module, because Ecto's dynamic binding is per repo

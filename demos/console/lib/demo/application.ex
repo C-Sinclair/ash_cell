@@ -16,7 +16,7 @@ defmodule Demo.Application do
          dir: Application.get_env(:demo, :cell_dir, "priv/cells"),
          max_resident: 64,
          encrypted?: true,
-         migrator: Demo.Cells.Schema
+         migrations_path: Demo.Cells.Schema.migrations_path()
        ]},
       {DNSCluster, query: Application.get_env(:demo, :dns_cluster_query) || :ignore},
       {Phoenix.PubSub, name: Demo.PubSub},

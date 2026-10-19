@@ -51,7 +51,6 @@ config :relay, :object_store,
 config :ash_cell,
   repo: Relay.CellRepo,
   dir: "priv/cells",
-  migrator: Relay.Schema,
   max_resident: 64
 
 # Import environment specific config. This must remain at the bottom

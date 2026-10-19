@@ -41,6 +41,9 @@ defmodule Demo.Cells.Vault do
   cell then tries to open an encrypted database with no key and fails, exactly as
   it would if the key were genuinely gone.
   """
+  # `Ecto.Migrator` reads the repo's config, and so runs its init/2, with no cell.
+  def key_for(nil), do: nil
+
   def key_for(clinic_id) do
     if revoked?(clinic_id) do
       nil
