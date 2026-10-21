@@ -81,7 +81,7 @@ The change lets the supervisor's `store:` option be a single `%AshCell.ObjectSto
 
 1. Done: `store_for/1` in the library, with a test that two cells with two region prefixes write to two buckets. Existing suite unchanged.
 2. Done: branch refusal across stores, with a test.
-3. The demo app: `Org`, `Project`, `Task`, the resolver, the creation validation.
+3. Done: the demo app: `Org`, `Project`, `Task`, the resolver, the creation validation.
 4. The bucket audit script and the README, including where it stops.
 
 ## Where it stops
