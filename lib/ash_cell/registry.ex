@@ -87,13 +87,23 @@ defmodule AshCell.Registry do
   new binder arrive before the close lands. Closing has to *stop* new binds, not
   merely observe their absence.
   """
-  def begin_closing(cell_key), do: :ets.insert(@binds, {closing_key(cell_key), true})
+  def begin_closing(cell_key), do: :ets.insert(@binds, {closing_key(cell_key), self()})
 
   @doc "Clears the closing mark for `cell_key`."
   def end_closing(cell_key), do: :ets.delete(@binds, closing_key(cell_key))
 
-  @doc "Whether `cell_key` is being closed right now."
-  def closing?(cell_key), do: :ets.member(@binds, closing_key(cell_key))
+  @doc """
+  Whether `cell_key` is being closed by another process right now.
+
+  The process that is closing it is let through, so a drain can still checkpoint and
+  ship the cell it has stopped everyone else from binding.
+  """
+  def closing?(cell_key) do
+    case :ets.lookup(@binds, closing_key(cell_key)) do
+      [{_, closer}] -> closer != self()
+      [] -> false
+    end
+  end
 
   defp closing_key(cell_key), do: {:closing, cell_key}
 

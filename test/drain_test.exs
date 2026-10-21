@@ -325,6 +325,50 @@ defmodule AshCell.DrainTest do
     end
   end
 
+  describe "a write that arrives during a drain" do
+    # The checkpoint is the drain's last look at the cell before it ships the file.
+    # A write that lands after it is in the WAL but not in the snapshot, so once the
+    # lease is released it is gone. The handler runs inside the drain's checkpoint
+    # statement and sends a write from another process at exactly that point.
+    test "is refused, not acknowledged into a cell being handed over" do
+      write("acme", "Before")
+      test = self()
+
+      :telemetry.attach(
+        "drain-race",
+        [:ash_cell, :test_repo, :query],
+        fn _, _, %{query: query}, _ ->
+          if String.starts_with?(query, "PRAGMA wal_checkpoint") and
+               !Process.get(:race_sent) do
+            Process.put(:race_sent, true)
+
+            spawn(fn ->
+              send(test, {:closing_at_checkpoint, AshCell.Registry.closing?("acme")})
+
+              result =
+                try do
+                  TenantPatient.create("During", tenant: "acme")
+                rescue
+                  error -> {:raised, error.__struct__}
+                end
+
+              send(test, {:racing_write, result})
+            end)
+          end
+        end,
+        nil
+      )
+
+      on_exit(fn -> :telemetry.detach("drain-race") end)
+
+      assert {:ok, %{drained: ["acme"]}} = AshCell.Drain.run(grace_ms: 500)
+
+      assert_receive {:closing_at_checkpoint, true}, 2_000
+      assert_receive {:racing_write, result}, 5_000
+      refute match?({:ok, _}, result)
+    end
+  end
+
   describe "draining one tenant" do
     test "leaves the rest of the fleet alone" do
       write("stays", "Row")

@@ -125,6 +125,10 @@ defmodule AshCell.Drain do
     warn_holders(cell_key, grace_ms)
     quiesced? = await_quiescence(cell_key, grace_ms)
 
+    # Marked before the checkpoint, not at the close. A write let in after the
+    # checkpoint is in the WAL and not the snapshot, and is lost once the lease goes.
+    AshCell.Registry.begin_closing(cell_key)
+
     with :ok <- checkpoint(cell_key),
          {:ok, snapshot} <- snapshot(cell_key, store),
          :ok <- release_lease(cell_key, store) do
@@ -132,6 +136,8 @@ defmodule AshCell.Drain do
       {:ok, %{quiesced?: quiesced?, snapshot: snapshot}}
     else
       {:error, reason} ->
+        AshCell.Registry.end_closing(cell_key)
+
         # The lease is deliberately *kept* on failure. Releasing it after a failed
         # snapshot would invite a successor to claim the tenant and resume from an
         # older generation, turning a recoverable local problem into lost writes.
