@@ -116,59 +116,17 @@ defmodule AshCell.CellKey do
   @spec resolver() :: module()
   def resolver, do: Application.get_env(:ash_cell, :cell_key, @default_resolver)
 
-  # 255 is the usual per-name limit. `-journal` is the longest suffix SQLite adds to
-  # a database's name, and `.db` is ours.
-  @max_encoded_bytes 255 - byte_size(".db") - byte_size("-journal")
-
   @doc """
   Encodes a cell key as a path-safe string, injectively, even on a
   case-insensitive filesystem.
 
-  Raises if the key is not a non-empty binary, or if it encodes to more than 244
-  bytes, which would not fit in a file name with its SQLite suffixes. Resolvers are
-  responsible for producing binaries: allowing atoms too would break injectivity,
-  since `:acme` and `"acme"` are different cells that would encode identically.
+  The same encoding `AshSqlite.MultiTenancy` names a tenant's database file with, so
+  a cell key and an AshSqlite tenant with the same value name the same file. Raises
+  `ArgumentError` for a key that is not a non-empty binary, or that encodes to more
+  than 244 bytes.
   """
   @spec encode(binary()) :: binary()
-  def encode(cell_key) when is_binary(cell_key) and byte_size(cell_key) > 0 do
-    encoded = cell_key |> :binary.bin_to_list() |> Enum.map_join(&encode_byte/1)
-
-    if byte_size(encoded) > @max_encoded_bytes do
-      raise ArgumentError, """
-      cell key #{inspect(cell_key)} encodes to #{byte_size(encoded)} bytes, and a \
-      database name can be at most #{@max_encoded_bytes}. Use a shorter identifier, \
-      such as a slug or a UUID, in the cell key.
-      """
-    end
-
-    encoded
-  end
-
-  def encode(other) do
-    raise ArgumentError, """
-    a cell key must be a non-empty binary, got: #{inspect(other)}
-
-    A cell key becomes a filename and an object-store prefix, so it has to encode
-    injectively. Atoms and strings would collide (`:acme` and "acme" are different
-    cells but the same filename), so #{inspect(AshCell.CellKey)}.resolve/1 must
-    return a binary.
-    """
-  end
-
-  # Unreserved per RFC 3986 without uppercase letters, and without `~`, which is the
-  # escape character and so must itself be escaped for the encoding to stay
-  # reversible.
-  defp encode_byte(byte) when byte in ?a..?z or byte in ?0..?9 or byte in [?-, ?., ?_],
-    do: <<byte>>
-
-  defp encode_byte(byte) do
-    <<hi::4, lo::4>> = <<byte>>
-    <<?~, hex(hi), hex(lo)>>
-  end
-
-  # Lowercase, so two encodings never differ only by case.
-  defp hex(nibble) when nibble < 10, do: ?0 + nibble
-  defp hex(nibble), do: ?a + nibble - 10
+  defdelegate encode(cell_key), to: AshSqlite.MultiTenancy
 
   @doc """
   Decodes a string produced by `encode/1`.

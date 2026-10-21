@@ -94,7 +94,7 @@ defmodule AshCell.MixProject do
       # Pinned to a ref, not a branch: `c:AshSqlite.Repo.tenant_repo/2` is on upstream
       # main and not yet in a release. Bump deliberately.
       {:ash_sqlite,
-       github: "ash-project/ash_sqlite", ref: "701530c544d4666f7a9d74ddf4b8ec9fad062660"},
+       github: "ash-project/ash_sqlite", ref: "a8aaad346bbe0acc7464acacc1235e9c83c88845"},
       {:ecto_sqlite3, "~> 0.12"},
       {:ecto_sql, "~> 3.13"},
       {:jason, "~> 1.0"},
