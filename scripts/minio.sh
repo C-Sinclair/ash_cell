@@ -16,6 +16,8 @@ set -euo pipefail
 
 ENDPOINT="${ASHCELL_S3_ENDPOINT:-http://127.0.0.1:9010}"
 BUCKET="${ASHCELL_S3_BUCKET:-ashcell-test}"
+# A second bucket, for the tests that route cells to more than one store.
+EU_BUCKET="${ASHCELL_S3_EU_BUCKET:-${BUCKET}-eu}"
 ACCESS_KEY="${ASHCELL_S3_ACCESS_KEY_ID:-ashcell}"
 SECRET_KEY="${ASHCELL_S3_SECRET_ACCESS_KEY:-ashcellsecret}"
 DATA_DIR="${ASHCELL_MINIO_DIR:-${TMPDIR:-/tmp}/ashcell-minio}"
@@ -54,8 +56,8 @@ wait_for_minio
 # idempotent, so this runs on every start rather than only the first.
 if command -v mc >/dev/null 2>&1; then
   mc alias set ashcell "${ENDPOINT}" "${ACCESS_KEY}" "${SECRET_KEY}" >/dev/null
-  mc mb --ignore-existing "ashcell/${BUCKET}" >/dev/null
-  echo "bucket ${BUCKET} ready"
+  mc mb --ignore-existing "ashcell/${BUCKET}" "ashcell/${EU_BUCKET}" >/dev/null
+  echo "buckets ${BUCKET} and ${EU_BUCKET} ready"
 else
-  echo "mc not found on PATH; assuming bucket ${BUCKET} already exists" >&2
+  echo "mc not found on PATH; assuming buckets ${BUCKET} and ${EU_BUCKET} already exist" >&2
 fi

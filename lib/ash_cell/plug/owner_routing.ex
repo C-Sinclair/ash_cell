@@ -48,8 +48,9 @@ if Code.ensure_loaded?(Plug) do
     @impl Plug
     def call(conn, opts) do
       with {:ok, tenant} <- fetch_tenant(conn, opts),
-           store when not is_nil(store) <- resolve_store(opts),
-           {:ok, owner} <- AshCell.Lease.holder(store, tenant),
+           cell_key = AshCell.CellKey.resolve(tenant),
+           store when not is_nil(store) <- resolve_store(opts, cell_key),
+           {:ok, owner} <- AshCell.Lease.holder(store, cell_key),
            false <- owner == local_owner(opts) do
         route_elsewhere(conn, owner, opts)
       else
@@ -89,18 +90,18 @@ if Code.ensure_loaded?(Plug) do
       end
     end
 
-    defp resolve_store(opts) do
+    defp resolve_store(opts, cell_key) do
       case Keyword.get(opts, :store) do
         {mod, fun, args} -> apply(mod, fun, args)
-        nil -> safe_manager_store()
-        store -> store
+        nil -> safe_manager_store(cell_key)
+        store -> AshCell.ObjectStore.Router.resolve(store, cell_key)
       end
     end
 
     # The manager may not be running yet during boot, and a request arriving then
     # should be served rather than 500.
-    defp safe_manager_store do
-      AshCell.Manager.store()
+    defp safe_manager_store(cell_key) do
+      AshCell.Manager.store(cell_key)
     catch
       :exit, _ -> nil
     end

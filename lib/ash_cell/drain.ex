@@ -84,7 +84,7 @@ defmodule AshCell.Drain do
   def run(opts \\ []) do
     started = System.monotonic_time(:millisecond)
     grace_ms = Keyword.get(opts, :grace_ms, @default_grace_ms)
-    store = Keyword.get(opts, :store, AshCell.Manager.store())
+    store = Keyword.get(opts, :store)
 
     AshCell.Manager.seal()
 
@@ -122,6 +122,11 @@ defmodule AshCell.Drain do
   tenant off a node without draining everything else.
   """
   def drain_cell(cell_key, store \\ nil, grace_ms \\ @default_grace_ms) do
+    store =
+      if store,
+        do: AshCell.ObjectStore.Router.resolve(store, cell_key),
+        else: AshCell.Manager.store(cell_key)
+
     warn_holders(cell_key, grace_ms)
     quiesced? = await_quiescence(cell_key, grace_ms)
 

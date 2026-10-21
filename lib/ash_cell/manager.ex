@@ -102,8 +102,9 @@ defmodule AshCell.Manager do
 
   def sealed?, do: GenServer.call(__MODULE__, :sealed?)
 
-  @doc "The configured object store, if this fleet replicates."
-  def store, do: GenServer.call(__MODULE__, :store)
+  @doc "The object store `cell_key` replicates to, or `nil` if this fleet does not replicate."
+  def store(cell_key),
+    do: AshCell.ObjectStore.Router.resolve(GenServer.call(__MODULE__, :store), cell_key)
 
   @doc "The owner name this node writes into leases."
   def owner, do: GenServer.call(__MODULE__, :owner)
@@ -331,7 +332,7 @@ defmodule AshCell.Manager do
           path: path(state, cell_key),
           encrypted?: state.encrypted?,
           migrations: state.migrations,
-          store: state.store,
+          store: AshCell.ObjectStore.Router.resolve(state.store, cell_key),
           policy: state.snapshot
         ]
 

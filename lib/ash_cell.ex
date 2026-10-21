@@ -473,8 +473,8 @@ defmodule AshCell do
   """
   @spec claim(term(), keyword()) :: {:ok, %AshCell.Lease{}} | {:error, term()}
   def claim(tenant, opts \\ []) do
-    store = require_store!()
     cell_key = AshCell.CellKey.resolve(tenant)
+    store = require_store!(cell_key)
     owner = AshCell.Manager.owner()
 
     with {:ok, lease} <- claim_lease(store, cell_key, owner, opts),
@@ -529,7 +529,8 @@ defmodule AshCell do
   The snapshot timeline for a cell, oldest first. See `AshCell.History.list/2`.
   """
   def history(tenant) do
-    AshCell.History.list(require_store!(), AshCell.CellKey.resolve(tenant))
+    cell_key = AshCell.CellKey.resolve(tenant)
+    AshCell.History.list(require_store!(cell_key), cell_key)
   end
 
   @doc """
@@ -542,23 +543,41 @@ defmodule AshCell do
   """
   def fork(tenant, opts) do
     opts = Keyword.update!(opts, :to, &AshCell.CellKey.resolve/1)
-    AshCell.Branch.fork(require_store!(), AshCell.CellKey.resolve(tenant), opts)
+    origin = AshCell.CellKey.resolve(tenant)
+
+    with {:ok, store} <- same_store(origin, opts[:to]) do
+      AshCell.Branch.fork(store, origin, opts)
+    end
   end
 
   @doc """
   Fast-forwards a branch's origin to the branch, or refuses. See
   `AshCell.Branch.merge/2`.
   """
-  def merge(%AshCell.Branch{} = record), do: AshCell.Branch.merge(require_store!(), record)
+  def merge(%AshCell.Branch{} = record) do
+    with {:ok, store} <- same_store(record.origin, record.branch) do
+      AshCell.Branch.merge(store, record)
+    end
+  end
 
   @doc "Deletes a branch's database, snapshots, and lease. See `AshCell.Branch.drop/2`."
-  def drop_branch(%AshCell.Branch{} = record), do: AshCell.Branch.drop(require_store!(), record)
+  def drop_branch(%AshCell.Branch{} = record),
+    do: AshCell.Branch.drop(require_store!(record.branch), record)
+
+  # A branch is a copy of a snapshot inside one store. Copying between two stores
+  # would move a cell's data out of the bucket its key names, so it is refused.
+  defp same_store(origin, branch) do
+    case {require_store!(origin), require_store!(branch)} do
+      {store, store} -> {:ok, store}
+      _ -> {:error, :cross_store_branch}
+    end
+  end
 
   # Branching reads and writes the snapshot history, so unlike the rest of the
   # runtime it cannot degrade gracefully for a fleet with no object store -- there
   # would be no history to branch from. Say that, rather than failing later on a nil.
-  defp require_store! do
-    AshCell.Manager.store() ||
+  defp require_store!(cell_key) do
+    AshCell.Manager.store(cell_key) ||
       raise """
       branching needs an object store, and this fleet has none configured.
 

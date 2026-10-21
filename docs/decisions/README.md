@@ -44,6 +44,7 @@ live in [`../design/`](../design), and reference these.
 | [26](ADR-26-count-in-flight-work-at-the-pool.md) | Count a cell's in-flight statements at its connection pool, not around each bind | accepted |
 | [23](ADR-23-merge-by-fast-forward-or-refuse.md) | Merge a branch only when its origin has not moved; refuse divergence rather than reconcile it, and measure divergence by content digest | accepted |
 | [24](ADR-24-a-segment-set-is-not-a-disjoint-cover.md) | A stream reader de-duplicates by offset and does not trust the store's listing to be duplicate-free | corrects an earlier belief |
+| [30](ADR-30-route-the-store-by-cell-key.md) | Choose a cell's object store from its cell key, through `store_for/1` | accepted |
 
 ## Performance, encryption, integration
 
