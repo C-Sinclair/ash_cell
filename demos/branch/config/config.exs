@@ -31,9 +31,6 @@ config :logger, :console,
 # Use Jason for JSON parsing in Phoenix
 config :phoenix, :json_library, Jason
 
-# Import environment specific config. This must remain at the bottom
-# of this file so it overrides the configuration defined above.
-import_config "#{config_env()}.exs"
 
 config :branch, Branch.CellRepo,
   # Every cell is an instance of this module started with its own database path,
@@ -69,3 +66,7 @@ config :ash_cell,
   repo: Branch.CellRepo,
   dir: "priv/cells",
   max_resident: 64
+
+# Import environment specific config. This must remain at the bottom
+# of this file so it overrides the configuration defined above.
+import_config "#{config_env()}.exs"

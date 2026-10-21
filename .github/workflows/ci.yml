@@ -611,3 +611,142 @@ jobs:
         run: |
           mix assets.setup
           mix assets.build
+
+  demo-branch:
+    name: Demo — branch
+    runs-on: ubuntu-latest
+
+    # Cannot run without an object store: a branch is a copy of a snapshot. The test config
+    # uses its own bucket, so the library's script is told to create that one.
+    env:
+      MIX_ENV: test
+      EXQLITE_USE_SYSTEM: "1"
+      EXQLITE_SYSTEM_CFLAGS: "-I/usr/include/sqlcipher"
+      EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: ash_cell
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: ash_cell/.tool-versions
+          version-type: strict
+
+      - name: Install SQLCipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev
+
+      - name: Install MinIO
+        run: |
+          curl -fsSL -o /usr/local/bin/minio https://dl.min.io/server/minio/release/linux-amd64/minio
+          curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x /usr/local/bin/minio /usr/local/bin/mc
+
+      - name: Start MinIO
+        working-directory: ash_cell
+        run: ASHCELL_S3_BUCKET=ashcell-branch-test scripts/minio.sh
+
+      - name: Cache deps and build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ash_cell/demos/branch/deps
+            ash_cell/demos/branch/_build
+          key: ${{ runner.os }}-demo-branch-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('ash_cell/demos/branch/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-demo-branch-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Fetch dependencies
+        working-directory: ash_cell/demos/branch
+        run: mix deps.get
+
+      - name: Compile exqlite against SQLCipher
+        working-directory: ash_cell/demos/branch
+        run: |
+          mix deps.compile
+          mix deps.compile exqlite --force
+
+      - name: Check formatting
+        working-directory: ash_cell/demos/branch
+        run: mix format --check-formatted
+
+      - name: Compile
+        working-directory: ash_cell/demos/branch
+        run: mix compile --warnings-as-errors
+
+      - name: Test
+        working-directory: ash_cell/demos/branch
+        run: mix test
+
+  demo-relay:
+    name: Demo — relay
+    runs-on: ubuntu-latest
+
+    # Its segments live in the object store, under the library's test bucket.
+    env:
+      MIX_ENV: test
+      EXQLITE_USE_SYSTEM: "1"
+      EXQLITE_SYSTEM_CFLAGS: "-I/usr/include/sqlcipher"
+      EXQLITE_SYSTEM_LDFLAGS: "-lsqlcipher"
+
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          path: ash_cell
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: ash_cell/.tool-versions
+          version-type: strict
+
+      - name: Install SQLCipher
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlcipher-dev
+
+      - name: Install MinIO
+        run: |
+          curl -fsSL -o /usr/local/bin/minio https://dl.min.io/server/minio/release/linux-amd64/minio
+          curl -fsSL -o /usr/local/bin/mc https://dl.min.io/client/mc/release/linux-amd64/mc
+          chmod +x /usr/local/bin/minio /usr/local/bin/mc
+
+      - name: Start MinIO
+        working-directory: ash_cell
+        run: scripts/minio.sh
+
+      - name: Cache deps and build
+        uses: actions/cache@v6
+        with:
+          path: |
+            ash_cell/demos/relay/deps
+            ash_cell/demos/relay/_build
+          key: ${{ runner.os }}-demo-relay-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('ash_cell/demos/relay/mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-demo-relay-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Fetch dependencies
+        working-directory: ash_cell/demos/relay
+        run: mix deps.get
+
+      - name: Compile exqlite against SQLCipher
+        working-directory: ash_cell/demos/relay
+        run: |
+          mix deps.compile
+          mix deps.compile exqlite --force
+
+      - name: Check formatting
+        working-directory: ash_cell/demos/relay
+        run: mix format --check-formatted
+
+      - name: Compile
+        working-directory: ash_cell/demos/relay
+        run: mix compile --warnings-as-errors
+
+      - name: Test
+        working-directory: ash_cell/demos/relay
+        run: mix test
