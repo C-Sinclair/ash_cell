@@ -90,6 +90,18 @@ defmodule AshCell.StoreRouterTest do
     end
   end
 
+  test "a statement on a cell key the router cannot place raises in the caller and leaves the manager up" do
+    manager = Process.whereis(AshCell.Manager)
+
+    error =
+      assert_raise Ash.Error.Unknown, fn ->
+        BoundPatient.create!("row", tenant: "ap:" <> unique_cell("org"))
+      end
+
+    assert Exception.message(error) =~ "no region"
+    assert Process.whereis(AshCell.Manager) == manager
+  end
+
   test "a branch into another region's bucket is refused", %{eu_cell: eu_cell} do
     {:ok, _} = AshCell.claim(eu_cell)
     {:ok, _} = ship(eu_cell)

@@ -1,13 +1,14 @@
 # ADR-30 — Choose a cell's object store from its cell key, through `store_for/1`
 
 **Status:** accepted
+**Last changed:** 2026-10-21 — `AshCell.Manager.ensure_started/1` resolves the store in the caller. It used to call `store_for/1` inside the manager, so an unknown key crashed the manager instead of raising at the caller's bind.
 **Date:** 2026-10-21
 **Deciders:** Conor Sinclair
 **Relates to:** [ADR-07](ADR-07-opaque-cell-keys.md) · [ADR-08](ADR-08-fence-by-shared-txid.md) · [ADR-16](ADR-16-isolation-is-blast-radius.md) · [ADR-18](ADR-18-tenant-in-job-args.md) · [ADR-23](ADR-23-merge-by-fast-forward-or-refuse.md) · [the region demo's design](../../demos/region/docs/design.md) · `lib/ash_cell/object_store/router.ex`
 
 ## The decision
 
-A fleet's `store:` option is either one `AshCell.ObjectStore` or a module implementing `AshCell.ObjectStore.Router`. That behaviour has one callback, `store_for/1`, which takes a **cell key** and returns the store holding that cell's snapshots, lease, and generation. It raises for a key it cannot place. Every lookup goes through `AshCell.Manager.store/1`, or through `AshCell.ObjectStore.Router.resolve/2` where a store was passed in. A branch whose origin and branch keys route to different stores is refused with `{:error, :cross_store_branch}`.
+A fleet's `store:` option is either one `AshCell.ObjectStore` or a module implementing `AshCell.ObjectStore.Router`. That behaviour has one callback, `store_for/1`, which takes a **cell key** and returns the store holding that cell's snapshots, lease, and generation. It raises for a key it cannot place. Every lookup goes through `AshCell.Manager.store/1`, or through `AshCell.ObjectStore.Router.resolve/2` where a store was passed in. The lookup runs in the calling process, never inside `AshCell.Manager`, so a raise reaches the caller. A branch whose origin and branch keys route to different stores is refused with `{:error, :cross_store_branch}`.
 
 ## Context
 
@@ -44,15 +45,16 @@ Branching is refused across stores because `AshCell.Branch.fork/3` copies a snap
 - **What it rules out.** Moving a cell to another region without changing its key. Choosing a store from anything a statement or a record carries.
 - **What it makes worse.** `AshCell.Manager.store/0` is gone. Callers outside the library that asked the manager for the fleet store now have to name a cell. None of the demos did.
 - **What stays open.** A wrong key is a silent misplacement. The router checks that a key names a known region, not that it names the right one for the tenant. Fencing per region is untested beyond the placement test. The txid namespace ([ADR-08](ADR-08-fence-by-shared-txid.md)) lives in the same bucket as the snapshots it fences, so the reasoning carries over. This is argued, not tested.
-- **What now depends on it.** The region demo, and every call site listed in option A. `AshCell.Drain` receives the fleet's `store:` option from the supervisor, so it must resolve a router per cell too. A first version did not, and it failed every shutdown drain.
+- **What now depends on it.** The region demo, and every call site listed in option A. `AshCell.Drain` receives the fleet's `store:` option from the supervisor, so it must resolve a router per cell too. A first version did not, and it failed every shutdown drain. `AshCell.Manager.ensure_started/1` resolves the store before calling the manager. A first version resolved it inside the manager's `handle_call/3`, so an unknown key on a statement crashed `AshCell.Manager` and `AshCell.Drain`, and the caller saw an exit.
 
 ## Evidence
 
 - `test/store_router_test.exs`, against two MinIO buckets:
   - `each cell's snapshots, lease and generation land only in its own region's bucket`
   - `a cell key the router cannot place fails the claim instead of using a default bucket`
+  - `a statement on a cell key the router cannot place raises in the caller and leaves the manager up`
   - `a branch into another region's bucket is refused`
-- The full suite passes with `store:` still a single struct: 322 tests, 0 failures, on 2026-10-21.
+- The full suite passes with `store:` still a single struct: 323 tests, 0 failures, on 2026-10-21.
 - `scripts/minio.sh` creates the second bucket, `ashcell-test-eu`.
 - Not measured: the cost of `store_for/1` per lookup. The region demo's design names that measurement.
 

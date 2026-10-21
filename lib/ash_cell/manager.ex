@@ -62,7 +62,10 @@ defmodule AshCell.Manager do
         end
 
       :error ->
-        GenServer.call(__MODULE__, {:start, cell_key}, 30_000)
+        # Resolved here, in the caller, so a router that raises for an unknown key
+        # raises at the caller's bind rather than crashing the manager.
+        store = store(cell_key)
+        GenServer.call(__MODULE__, {:start, cell_key, store}, 30_000)
     end
   end
 
@@ -293,7 +296,7 @@ defmodule AshCell.Manager do
   end
 
   @impl true
-  def handle_call({:start, _cell_key}, _from, %{sealed?: true} = state) do
+  def handle_call({:start, _cell_key, _store}, _from, %{sealed?: true} = state) do
     {:reply, {:error, :draining}, state}
   end
 
@@ -301,12 +304,12 @@ defmodule AshCell.Manager do
   # already failed. Retrying costs the same failure again -- a wrong key or a bad
   # migration is not transient -- and each attempt logs another crash, burying the
   # original cause. Clear it deliberately with release/1 once the cause is fixed.
-  def handle_call({:start, cell_key}, _from, state)
+  def handle_call({:start, cell_key, _store}, _from, state)
       when is_map_key(state.quarantined, cell_key) do
     {:reply, {:error, {:quarantined, state.quarantined[cell_key]}}, state}
   end
 
-  def handle_call({:start, cell_key}, _from, state) do
+  def handle_call({:start, cell_key, store}, _from, state) do
     # `Process.alive?` for the same reason `ensure_started/1` checks: a registry hit
     # is not proof of life, and handing back a corpse from here is worse, because a
     # caller that reached the manager has already been told the fast path failed.
@@ -332,7 +335,7 @@ defmodule AshCell.Manager do
           path: path(state, cell_key),
           encrypted?: state.encrypted?,
           migrations: state.migrations,
-          store: AshCell.ObjectStore.Router.resolve(state.store, cell_key),
+          store: store,
           policy: state.snapshot
         ]
 
