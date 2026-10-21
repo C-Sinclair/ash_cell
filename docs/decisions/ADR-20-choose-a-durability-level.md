@@ -1,7 +1,8 @@
 # ADR-20 — Choose SQLite's durability level (`synchronous`)
 
-**Status:** proposed — still open, but with a plan that can close it
-**Last changed:** 2026-10-21 — the cost is now measured on macOS (`scripts/synchronous_probe.exs`, below). It shows that on macOS the price of durability is `fullfsync`, not `synchronous`, and that group commit amortises it. Linux is still unmeasured, and the power-loss test is still unbuilt, so no decision yet.
+**Status:** proposed — still open, with both measurements now in hand
+**Last changed:** 2026-10-21 — the cost is measured on Linux, and the power-loss test is built and run (`scripts/power_loss/run.sh`, the `durability` CI job). On a Linux runner `:normal` lost every acknowledged commit in all 20 replayed power cuts, and `:full` lost none. The decision between B and C is still to be made.
+**Previously changed:** 2026-10-21 — the cost is now measured on macOS (`scripts/synchronous_probe.exs`, below). It shows that on macOS the price of durability is `fullfsync`, not `synchronous`, and that group commit amortises it. Linux is still unmeasured, and the power-loss test is still unbuilt, so no decision yet.
 **Previously changed:** 2026-08-25 — added Option C (per-cell policy), and the argument that a throughput
 measurement is necessary but *not sufficient* to close this: it needs a test that can fail.
 **Date:** 2026-08-21
@@ -104,7 +105,40 @@ What this shows:
 - The fsync is paid per commit, not per row. At 100 rows a transaction, `:full` with `fullfsync` writes about 25,000 rows a second. Group commit is what makes durability affordable here, not the choice of level.
 - This is one machine. Linux `fsync` does reach stable storage on most drives without an extra flag, so its `:full` cost is expected to sit between these two columns. That is an expectation, not a measurement, and the production decision depends on it.
 
-Still owed: the same probe on Linux, on the disk type production uses, and the power-loss test from step 2.
+Still owed: the same probe on the disk type production uses.
+
+## Measured cost on Linux
+
+The same probe in the `durability` CI job, 2026-10-21, on a GitHub Actions `ubuntu-latest` runner (Azure VM disk, ext4, OTP 28.1.1), CI run 39661730776. Same shape: 500 transactions per run, median of 5 runs, p99 from the median run. One CI run, so one machine.
+
+| Inserts per transaction | `:normal` | `:full` | `:full` + `fullfsync` | `:extra` + `fullfsync` |
+|---|---|---|---|---|
+| 1 | 49 (p99 68) | 271 (p99 4,809) | 273 (p99 1,101) | 286 (p99 9,899) |
+| 10 | 32 (p99 55) | 295 (p99 799) | 278 (p99 1,242) | 264 (p99 6,123) |
+| 100 | 186 (p99 271) | 404 (p99 5,592) | 403 (p99 1,837) | 402 (p99 2,571) |
+
+What this shows:
+
+- On Linux `:full` costs about 220 µs a commit over `:normal`. That is about 3,700 single-row commits a second for one cell, against about 20,000 at `:normal`.
+- `fullfsync` changes nothing on Linux, as expected. It is a macOS-only pragma.
+- The p99 at `:full` reaches about 5 ms. Group commit amortises the fsync here as on macOS: at 100 rows a transaction `:full` writes about 248,000 rows a second.
+- A cloud VM disk is not the production disk. The production number is still owed.
+
+## Power-loss replay
+
+`scripts/power_loss/run.sh`, in the same CI run. A real cell (`AshCell.Test.BoundPatient` on `AshCell.TestRepo`) writes 200 single-row commits onto ext4 over a `dm-log-writes` device. After each commit returns, the writer puts a mark in the block log. The script replays the log up to every 10th mark onto a blank device, mounts it, and checks the cell with `PRAGMA integrity_check` and a row count. Each replay is the disk as a power cut at that mark would leave it.
+
+| `synchronous` | Power cuts replayed | Lost acknowledged commits | Integrity failures |
+|---|---|---|---|
+| `:normal` | 20 | 20 (every replay held 0 of its acknowledged rows) | 0 |
+| `:full` | 20 | 0 | 0 |
+
+What this shows:
+
+- Under `:normal`, which every cell runs today, a power cut loses acknowledged commits. In this run it lost all of them: the whole writer finished before the kernel wrote any WAL page back, so every replay held the schema and no rows. The window on a real machine is the kernel's writeback delay, not the length of this run. That window was not measured.
+- Under `:full`, every replay held every row acknowledged before its mark.
+- No replay corrupted the database at either level. `:normal` loses commits. It does not corrupt the file.
+- The test can fail, which was the gap step 2 named. It fails on `:normal` and passes on `:full`, so it tells the two levels apart.
 
 ## Consequences
 
@@ -132,8 +166,8 @@ Still owed: the same probe on Linux, on the disk type production uses, and the p
   `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:24`. `lib/ash_cell/cell.ex` passes neither, so
   every cell in the fleet currently runs `:normal` by omission rather than by choice. Read at
   exqlite 0.33 / ecto_sqlite3 0.21, 2026-08-25.
-- **Not verified, and it is the point of the plan above:** that `:full` actually survives a
-  power-loss event on the target filesystem. macOS in particular has a history of `fsync` not
+- `:full` survives replayed power cuts on ext4 over a Linux block device, and `:normal` does not: the *Power-loss replay* section above, CI run 39661730776.
+- **Not verified:** that `:full` survives a power-loss event on the production filesystem and disk. macOS in particular has a history of `fsync` not
   reaching stable storage without `F_FULLFSYNC`, so "we set the pragma" is not evidence that the
   guarantee holds — only a fault-injection test is.
 
