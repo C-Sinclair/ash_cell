@@ -1,7 +1,8 @@
 # ADR-20 — Choose SQLite's durability level (`synchronous`)
 
 **Status:** proposed — still open, but with a plan that can close it
-**Last changed:** 2026-08-25 — added Option C (per-cell policy), and the argument that a throughput
+**Last changed:** 2026-10-21 — the cost is now measured on macOS (`scripts/synchronous_probe.exs`, below). It shows that on macOS the price of durability is `fullfsync`, not `synchronous`, and that group commit amortises it. Linux is still unmeasured, and the power-loss test is still unbuilt, so no decision yet.
+**Previously changed:** 2026-08-25 — added Option C (per-cell policy), and the argument that a throughput
 measurement is necessary but *not sufficient* to close this: it needs a test that can fail.
 **Date:** 2026-08-21
 **Deciders:** Conor Sinclair
@@ -39,7 +40,7 @@ nobody would care about.
 
 ### Option C — durability as a per-cell policy
 
-`synchronous` is a first-class connection option — `:extra | :full | :normal | :off`,
+`synchronous` is a connection option — `:extra | :full | :normal | :off`,
 defaulting to `:normal` (`deps/exqlite/lib/exqlite/connection.ex:115`) — and it is set per
 connection, so per cell. AshCell never sets it today.
 
@@ -87,6 +88,24 @@ to touch real I/O.
 **3. Decide the shape**, between B and C, with the measurement in hand — and record which claims in
 the docs and demo READMEs become conditional if C wins.
 
+## Measured cost on macOS
+
+`scripts/synchronous_probe.exs`, 2026-10-21: one WAL-mode file per level on an APFS SSD (macOS, OTP 28, exqlite 0.39), 500 transactions per run, median of 5 runs. µs per transaction, with p99 from the median run.
+
+| Inserts per transaction | `:normal` | `:full` | `:full` + `fullfsync` | `:extra` + `fullfsync` |
+|---|---|---|---|---|
+| 1 | 10 (p99 84) | 47 (p99 228) | 3,890 (p99 4,112) | 3,944 (p99 5,346) |
+| 10 | 25 (p99 47) | 55 (p99 195) | 3,903 (p99 4,274) | 3,950 (p99 8,371) |
+| 100 | 293 (p99 1,376) | 247 (p99 913) | 4,002 (p99 9,951) | 8,064 (p99 18,903) |
+
+What this shows:
+
+- On macOS `:full` alone costs about 37 µs a commit, and buys little, because `fsync` there does not force the drive's cache to stable storage. Only `PRAGMA fullfsync = ON` issues `F_FULLFSYNC`, and that costs about 3.9 ms a commit: roughly 257 single-row commits a second for one cell, whatever the level.
+- The fsync is paid per commit, not per row. At 100 rows a transaction, `:full` with `fullfsync` writes about 25,000 rows a second. Group commit is what makes durability affordable here, not the choice of level.
+- This is one machine. Linux `fsync` does reach stable storage on most drives without an extra flag, so its `:full` cost is expected to sit between these two columns. That is an expectation, not a measurement, and the production decision depends on it.
+
+Still owed: the same probe on Linux, on the disk type production uses, and the power-loss test from step 2.
+
 ## Consequences
 
 - **What it rules out.** Nothing yet. No choice has been foreclosed.
@@ -107,7 +126,7 @@ the docs and demo READMEs become conditional if C wins.
 - exqlite's default is `synchronous: :normal`; `cell.ex` does not override it.
 - DST invariant `no_acknowledged_write_lost` and the simulator's model of the object store, not
   fsync behaviour, from [ADR-11](ADR-11-simulate-the-protocol-only.md).
-- No measurement of `:normal` versus `:full` throughput has been taken.
+- `:normal` versus `:full` is measured on macOS only; see *Measured cost on macOS*.
 - `synchronous` is settable per connection: `deps/exqlite/lib/exqlite/connection.ex:115`
   (`:extra | :full | :normal | :off`, default `:normal`) and
   `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:24`. `lib/ash_cell/cell.ex` passes neither, so
