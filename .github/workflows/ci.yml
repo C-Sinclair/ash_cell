@@ -86,6 +86,78 @@ jobs:
             -x '/deps/' -x '/_build/' -x '/node_modules/' \
             -x '/doc/' -x 'cli/target/'
 
+  durability:
+    name: Durability (ADR-20)
+    runs-on: ubuntu-latest
+
+    # The two things ADR-20 says it cannot be decided without: what `synchronous` costs
+    # on Linux, and a power-loss test that can fail. Killing a process proves nothing
+    # about fsync, because the page cache survives it, so the test records the block
+    # writes with dm-log-writes and replays them up to each acknowledged commit.
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: erlef/setup-beam@v1
+        id: beam
+        with:
+          version-file: .tool-versions
+          version-type: strict
+
+      - name: Cache deps and build
+        uses: actions/cache@v6
+        with:
+          path: |
+            deps
+            _build
+          key: ${{ runner.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-${{ hashFiles('mix.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-mix-${{ steps.beam.outputs.otp-version }}-${{ steps.beam.outputs.elixir-version }}-
+
+      - name: Install dm-log-writes, replay-log and sqlite3
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -yq sqlite3 "linux-modules-extra-$(uname -r)"
+          sudo modprobe dm-log-writes
+          git clone https://github.com/josefbacik/log-writes /tmp/log-writes
+          git -C /tmp/log-writes checkout 7b70d8a6863c5de30933d42a7672d35d01d2dc6c
+          make -C /tmp/log-writes
+          sudo install /tmp/log-writes/replay-log /usr/local/bin/replay-log
+
+      - run: mix deps.get
+
+      - run: mix compile
+
+      - name: Measure what each synchronous level costs
+        run: |
+          mix run scripts/synchronous_probe.exs | tee probe.txt
+          {
+            echo "## synchronous probe (Linux, ubuntu-latest runner disk)"
+            echo '```'
+            cat probe.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Power-loss summary header
+        run: |
+          {
+            echo "## Power-loss replays"
+            echo "| synchronous | commits | power cuts replayed | lost acknowledged commits | integrity failures |"
+            echo "|---|---|---|---|---|"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Expected to lose commits: this is what every cell runs today. A run that loses
+      # none means the test did not show it can fail, which is worth knowing too.
+      - name: Power loss at synchronous=normal
+        run: |
+          if scripts/power_loss/run.sh normal; then
+            echo "::warning::synchronous=normal lost no acknowledged commits; the test did not demonstrate it can fail"
+          else
+            echo "::notice::synchronous=normal lost acknowledged commits, as ADR-20 expects"
+          fi
+
+      - name: Power loss at synchronous=full
+        run: scripts/power_loss/run.sh full
+
   cipher:
     name: SQLCipher
     runs-on: ubuntu-latest
