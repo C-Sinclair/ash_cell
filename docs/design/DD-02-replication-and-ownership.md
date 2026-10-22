@@ -117,7 +117,6 @@ Per cell, three object-store objects, deliberately separate:
 - Fencing protects writes. A partitioned node keeps serving reads from a cell it no longer owns
   until its local lease TTL passes; `:strict` mode removes the window per-read at the cost of
   the performance argument, and is not the default.
-- `ObjectStore.list/2` has no S3 pagination and breaks past 1000 snapshots.
 - Snapshot and restore are non-atomic whole-file operations.
 - The fake object-store model in the DST simulation encodes *believed* conditional-write
   semantics; a separate conformance run against real MinIO, R2 and Tigris is required because

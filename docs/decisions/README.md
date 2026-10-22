@@ -100,7 +100,7 @@ false. Do not reintroduce the superseded position:
 Not yet worth an ADR each: the cost of `synchronous: :full` on the production disk and under many
 concurrent cells ([ADR-20](ADR-20-choose-a-durability-level.md)); every deploy migrates every cell; reads are not fenced the way writes
 are; background jobs have no request boundary to route at; thundering herd on node loss;
-`ObjectStore.list/2` has no S3 pagination, so it breaks past 1000 snapshots; snapshot and restore
+snapshot and restore
 are non-atomic whole-file operations; `assert_bound!/0` cannot detect a tenant mismatch; a
 rewrite path that forgets `await_repo?: true` gets [ADR-21](ADR-21-close-does-not-await-the-connection.md)'s
 bug back silently; and a data-layer statement is invisible to a drain for the few microseconds

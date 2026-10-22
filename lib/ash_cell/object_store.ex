@@ -78,9 +78,14 @@ defmodule AshCell.ObjectStore do
     end
   end
 
-  @doc "Keys under `prefix`. Used to find a tenant's newest snapshot."
-  def list(store, prefix) do
-    with {:ok, entries} <- list_details(store, prefix) do
+  @doc """
+  Keys under `prefix`. Used to find a tenant's newest snapshot.
+
+  Follows ListObjectsV2 pagination, so every key is returned or the call fails.
+  `:max_keys` sets the page size and exists for tests.
+  """
+  def list(store, prefix, opts \\ []) do
+    with {:ok, entries} <- list_details(store, prefix, opts) do
       {:ok, Enum.map(entries, & &1.key)}
     end
   end
@@ -97,14 +102,34 @@ defmodule AshCell.ObjectStore do
   enough to label a point in history for an operator; not a timestamp to order
   anything by. The txid is what orders snapshots.
   """
-  def list_details(store, prefix) do
-    with {:ok, body} <- list_body(store, prefix) do
-      {:ok,
-       ~r|<Contents>(.*?)</Contents>|s
-       |> Regex.scan(body)
-       |> Enum.map(fn [_, entry] -> parse_entry(entry) end)
-       |> Enum.reject(&is_nil(&1.key))}
+  def list_details(store, prefix, opts \\ []) do
+    list_pages(store, prefix, opts, nil, [])
+  end
+
+  # A failed page fails the whole listing: a partial list would let
+  # `AshCell.Replicator.latest_txid/2` adopt a low high-water mark (ADR-08).
+  defp list_pages(store, prefix, opts, token, pages) do
+    with {:ok, body} <- list_body(store, prefix, opts, token) do
+      pages = [parse_entries(body) | pages]
+
+      case {tag(body, "IsTruncated"), tag(body, "NextContinuationToken")} do
+        {"true", next} when is_binary(next) and next != "" ->
+          list_pages(store, prefix, opts, next, pages)
+
+        {"true", _} ->
+          {:error, :truncated_without_continuation_token}
+
+        _ ->
+          {:ok, pages |> Enum.reverse() |> Enum.concat()}
+      end
     end
+  end
+
+  defp parse_entries(body) do
+    ~r|<Contents>(.*?)</Contents>|s
+    |> Regex.scan(body)
+    |> Enum.map(fn [_, entry] -> parse_entry(entry) end)
+    |> Enum.reject(&is_nil(&1.key))
   end
 
   defp parse_entry(entry) do
@@ -140,14 +165,19 @@ defmodule AshCell.ObjectStore do
     end
   end
 
-  defp list_body(store, prefix) do
+  defp list_body(store, prefix, opts, token) do
+    params =
+      [{"list-type", "2"}, {"prefix", prefix}]
+      |> maybe_param("max-keys", opts[:max_keys])
+      |> maybe_param("continuation-token", token)
+
     # Query parameters must go through Req's `:params` so they are part of the
     # canonical request SigV4 signs. Interpolating them into the URL string
     # produces a valid-looking request that the server rejects with 403.
     Req.new(
       method: :get,
       url: "#{store.endpoint}/#{store.bucket}",
-      params: [{"list-type", "2"}, {"prefix", prefix}]
+      params: params
     )
     |> sign(store)
     |> Req.request()
@@ -180,6 +210,9 @@ defmodule AshCell.ObjectStore do
       service: :s3
     )
   end
+
+  defp maybe_param(params, _name, nil), do: params
+  defp maybe_param(params, name, value), do: params ++ [{name, to_string(value)}]
 
   defp maybe_header(headers, _name, nil), do: headers
   defp maybe_header(headers, name, value), do: [{name, value} | headers]
