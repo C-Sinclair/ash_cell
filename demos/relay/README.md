@@ -31,8 +31,8 @@ This is the part to read before quoting any of the above.
 
 - **A returned append is not durable.** It is in the cell file, and reaches the
   object store at the next flush — every 40 tokens here. RPO is the flush
-  interval, not zero, and [ADR-20](../../docs/decisions/ADR-20-choose-a-durability-level.md)
-  is open about the file itself.
+  interval, not zero. The cell file itself is fsynced on each commit
+  ([ADR-20](../../docs/decisions/ADR-20-choose-a-durability-level.md)).
 - **Reads are not fenced.** A node that has lost the cell keeps serving its
   stream's tail until it notices. A resuming reader that lands on it sees an
   offset that has stopped advancing.

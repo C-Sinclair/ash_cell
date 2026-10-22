@@ -75,9 +75,9 @@ unfencing a current holder.
 - **What it makes worse.** The object layout changed (breaking, though harmless pre-production);
   a store-read failure now fails the claim outright rather than degrading gracefully, which is
   intentional but means a flaky store blocks adoption rather than allowing it.
-- **What stays open.** [ADR-20](ADR-20-choose-a-durability-level.md) — this ADR fences the write
-  *once it reaches the object store*; it says nothing about whether the local commit that precedes
-  it was itself durable.
+- **What stays open.** This ADR fences the write *once it reaches the object store*. Whether the
+  local commit before it was durable is [ADR-20](ADR-20-choose-a-durability-level.md)'s, which
+  runs cells at `synchronous: :full`.
 - **What now depends on it.** [ADR-09](ADR-09-snapshot-before-releasing-the-lease.md)'s ordering,
   [ADR-10](ADR-10-fail-closed-on-a-refused-shipment.md)'s fail-closed behaviour on a refused
   shipment, [ADR-11](ADR-11-simulate-the-protocol-only.md)'s `fenced_node_stops_acknowledging`

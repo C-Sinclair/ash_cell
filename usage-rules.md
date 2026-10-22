@@ -347,12 +347,14 @@ directly silently misses recent writes.
 
 ## Known limits — do not claim otherwise
 
-- **Recovery point is ~1 second, not zero.** Replication ships on an interval.
+- **Recovery point is the snapshot interval, not zero.** Snapshots ship on a
+  schedule, up to 60 seconds apart by default.
 - **Every deploy migrates every cell**, and `fly-replay` does nothing for a
   websocket that is already established.
 - **Thundering herd on node loss is unsolved.** Cold restores need admission control.
-- **Durability is whatever your pragmas say.** `exqlite` defaults `synchronous` to
-  `:normal`, which in WAL mode means a returned `COMMIT` has not been fsynced.
+- **A commit is durable on the node's disk, not off it.** Cells run
+  `synchronous: :full`, so a returned `COMMIT` survives a power cut. Losing the disk
+  loses every write since the last snapshot shipped. A repo can choose a lower level.
 - **HIPAA does not require physical isolation.** It is a blast-radius reduction and
   an enterprise sales position, not a regulatory advantage.
 - **Per-tenant keys are not confidential computing.** The node holds the plaintext

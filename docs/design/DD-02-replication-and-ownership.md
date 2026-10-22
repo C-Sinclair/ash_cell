@@ -127,10 +127,9 @@ Per cell, three object-store objects, deliberately separate:
 
 ## Open risks
 
-- SQLite's `synchronous` pragma is left at exqlite's default (`:normal`), which in WAL mode
-  means a returned `COMMIT` is not necessarily fsynced — a possible silent loss on power loss
-  or kernel panic that the DST simulation cannot see, since it models the object store, not
-  fsync behaviour. No decision has been made and no measurement taken (ADR-20, open).
+- SQLite's `synchronous` pragma was left at exqlite's default (`:normal`), which lost
+  acknowledged commits on power loss. Cells now run `:full` by default (ADR-20, accepted), measured
+  by a power-loss replay rather than the DST simulation, which models the object store, not fsync.
 - `with_tenant/2` crashes with `MatchError` on documented error tuples.
 - exqlite's nested savepoints share one fixed name; untested at depth ≥ 2, relevant to any
   future nested transaction inside a shipping/checkpoint sequence.

@@ -38,7 +38,7 @@ live in [`../design/`](../design), and reference these.
 | [11](ADR-11-simulate-the-protocol-only.md) | Simulate the coordination protocol only; SQLite and real processes stay out | accepted |
 | [12](ADR-12-whole-file-snapshots-on-a-schedule.md) | Ship whole-file snapshots on a jittered schedule; defer per-commit durability | accepted |
 | [14](ADR-14-bounded-read-staleness.md) | Bound read staleness on the monotonic clock, and expose it as explicit modes | accepted |
-| [20](ADR-20-choose-a-durability-level.md) | Choose SQLite's durability level (`synchronous`) | **proposed — open** |
+| [20](ADR-20-choose-a-durability-level.md) | Run cells at `synchronous: :full` unless a repo chooses otherwise | accepted |
 | [21](ADR-21-close-does-not-await-the-connection.md) | Close does not wait for the connection; the rewrite path asks it to | accepted |
 | [22](ADR-22-where-the-tenancy-runtime-lives.md) | AshCell owns its tenancy runtime; upstream supplies the seam and no runtime | accepted — seam question closed |
 | [26](ADR-26-count-in-flight-work-at-the-pool.md) | Count a cell's in-flight statements at its connection pool, not around each bind | accepted |
@@ -97,8 +97,8 @@ false. Do not reintroduce the superseded position:
 
 ## Still open
 
-[ADR-20](ADR-20-choose-a-durability-level.md) is undecided and the risk is live. Beyond it, and
-not yet worth an ADR each: every deploy migrates every cell; reads are not fenced the way writes
+Not yet worth an ADR each: the cost of `synchronous: :full` on the production disk and under many
+concurrent cells ([ADR-20](ADR-20-choose-a-durability-level.md)); every deploy migrates every cell; reads are not fenced the way writes
 are; background jobs have no request boundary to route at; thundering herd on node loss;
 `ObjectStore.list/2` has no S3 pagination, so it breaks past 1000 snapshots; snapshot and restore
 are non-atomic whole-file operations; `assert_bound!/0` cannot detect a tenant mismatch; a

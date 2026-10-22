@@ -68,9 +68,8 @@ transaction, which nothing here wants.
 - **Not Kafka.** No partitions, no consumer groups, no cross-stream ordering, no
   lag metrics.
 - **Not exactly-once.** A reader that crashes before recording its offset re-reads.
-- **Not a durability claim.** RPO is the flush interval;
-  [ADR-20](../../../docs/decisions/ADR-20-choose-a-durability-level.md) is open
-  about the file underneath it.
+- **Not a durability claim.** RPO is the flush interval. The file underneath it is fsynced on
+  each commit ([ADR-20](../../../docs/decisions/ADR-20-choose-a-durability-level.md)).
 - **Not a comparison.** No benchmark against Redis streams or a hosted queue. The
   trade is per-stream isolation and no coordination against their throughput, and
   saying so beats implying a measurement nobody ran.

@@ -54,6 +54,7 @@ defmodule AshCell.MixProject do
       extras: [
         {"README.md", title: "Home"},
         {"CHANGELOG.md", title: "Changelog"},
+        {"docs/storage.md", title: "How a cell stores data"},
         "docs/spec.md",
         "docs/dst.md",
         {"CONTRIBUTING.md", title: "Contributing"}
@@ -70,6 +71,7 @@ defmodule AshCell.MixProject do
         "Replication and ownership": [
           AshCell.Lease,
           AshCell.ObjectStore,
+          AshCell.ObjectStore.Router,
           AshCell.Ownership,
           AshCell.Replicator,
           AshCell.SnapshotPolicy

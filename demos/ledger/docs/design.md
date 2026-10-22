@@ -77,8 +77,8 @@ not reconcile within one.
   per-aggregate throughput. This demo gives per-tenant isolation and atomic read models. Different
   trade, and the README says so rather than implying a benchmark.
 - **Not cross-book atomicity.** Refused, demonstrated, and left refused.
-- **Not a claim about durability** until [ADR-20](../../../docs/decisions/ADR-20-choose-a-durability-level.md)
-  closes. See *Where it stops*.
+- **Not a claim about durability off the node.** Commits are fsynced
+  ([ADR-20](../../../docs/decisions/ADR-20-choose-a-durability-level.md)). See *Where it stops*.
 - **Not float money.** Integer minor units only, and the property tests assert no arithmetic path
   produces a non-integer.
 
@@ -140,9 +140,9 @@ Warm cell, median of 5, integer amounts, single node:
   practical.
 - **Version-conflict rate** under N concurrent submitters against one account, to show the check
   fires rather than being theoretically present.
-- **Durability**: whatever [ADR-20](../../../docs/decisions/ADR-20-choose-a-durability-level.md)
-  settles on, measured here at `:normal` and `:full`, because a ledger is the workload where the
-  fsync cost is most likely to be worth paying and least likely to be affordable.
+- **Durability cost**: posting throughput at `:full`, the level
+  [ADR-20](../../../docs/decisions/ADR-20-choose-a-durability-level.md) chose, with and without
+  batching, because a ledger is the workload where the fsync cost is most likely to bite.
 
 ## Staging
 
@@ -163,11 +163,11 @@ Warm cell, median of 5, integer amounts, single node:
 
 ## Where it stops
 
-- **Durability is whatever [ADR-20](../../../docs/decisions/ADR-20-choose-a-durability-level.md)
-  says, and today that is undecided.** Under `synchronous: :normal` an acknowledged posting can be
-  lost on power loss — and for a ledger that is not stale data, it is a posting that never happened
-  with balances already derived from it. Until ADR-20 closes, this demo must not claim durability,
-  and its README must say so in its first paragraph.
+- **A posting is durable on the node's disk, not off it.** Cells run `synchronous: :full`
+  ([ADR-20](../../../docs/decisions/ADR-20-choose-a-durability-level.md)), so an acknowledged
+  posting survives a power cut. If the disk is lost, postings since the last snapshot are gone, and
+  for a ledger that is a posting that never happened with balances already derived from it. The
+  README must say so in its first paragraph.
 - **No cross-book atomicity.** The saga leaves an observable intermediate state. That is shown, not
   fixed.
 - **No global view.** "Every book's trial balance" is a fan-out over cells with no shared index —
@@ -184,10 +184,8 @@ Warm cell, median of 5, integer amounts, single node:
 
 ## Open risks
 
-- **The demo's headline claim depends on an unclosed ADR.** If ADR-20 lands on per-cell policy,
-  this demo's cells take `:full` and the README states the measured cost; if `:full` proves
-  unaffordable, the honest outcome is that the demo documents a durability gap rather than being
-  quietly shipped without one.
+- **`:full` may be unaffordable at ledger posting rates.** If the measurement says so, the demo
+  documents the batching it needs rather than dropping to `:normal`.
 - **Never truncating makes the file grow without bound.** Fine at demo scale, a real operational
   question at ten years of postings, and nothing here solves it. Cutting the cell per book *per
   year* (`book:acme:2026`) is the obvious answer and would make the demo's cut argument more

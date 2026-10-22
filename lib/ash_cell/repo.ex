@@ -7,7 +7,8 @@ defmodule AshCell.Repo do
   options sit under the repo's `tenants:` key, and each cell's instance is started
   with `tenant:` set to its cell key, so `init/2` can give each cell its own key. An
   `encrypted?: true` fleet refuses a cell whose `init/2` set no `:key`, so set it
-  before calling `super/2`.
+  before calling `super/2`. Cells run with `synchronous: :full` unless the repo's
+  config or `init/2` sets another level.
 
       config :my_app, MyApp.CellRepo,
         tenants: [
@@ -96,6 +97,10 @@ defmodule AshCell.Repo do
     # A nil key means no key, not an empty one: exqlite would issue `PRAGMA key`
     # with nothing after it.
     config = if is_nil(config[:key]), do: Keyword.delete(config, :key), else: config
+
+    # :full unless the repo's config or init/2 chose a level. Under exqlite's default,
+    # :normal, a power cut loses acknowledged commits (ADR-20).
+    config = Keyword.put_new(config, :synchronous, :full)
 
     {:ok, Keyword.drop(config, [:tenant, :tenants, :encrypted?])}
   end

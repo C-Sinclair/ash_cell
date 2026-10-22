@@ -1,7 +1,8 @@
 # ADR-20 — Choose SQLite's durability level (`synchronous`)
 
-**Status:** proposed — still open, with both measurements now in hand
-**Last changed:** 2026-10-21 — the cost is measured on Linux, and the power-loss test is built and run (`scripts/power_loss/run.sh`, the `durability` CI job). On a Linux runner `:normal` lost every acknowledged commit in all 20 replayed power cuts, and `:full` lost none. The decision between B and C is still to be made.
+**Status:** accepted
+**Last changed:** 2026-10-22 — accepted as Option B. `AshCell.Repo` gives every cell `synchronous: :full` unless its repo chose a level, following the power-loss replay below.
+**Previously changed:** 2026-10-21 — the cost is measured on Linux, and the power-loss test is built and run (`scripts/power_loss/run.sh`, the `durability` CI job). On a Linux runner `:normal` lost every acknowledged commit in all 20 replayed power cuts, and `:full` lost none. The decision between B and C is still to be made.
 **Previously changed:** 2026-10-21 — the cost is now measured on macOS (`scripts/synchronous_probe.exs`, below). It shows that on macOS the price of durability is `fullfsync`, not `synchronous`, and that group commit amortises it. Linux is still unmeasured, and the power-loss test is still unbuilt, so no decision yet.
 **Previously changed:** 2026-08-25 — added Option C (per-cell policy), and the argument that a throughput
 measurement is necessary but *not sufficient* to close this: it needs a test that can fail.
@@ -11,9 +12,7 @@ measurement is necessary but *not sufficient* to close this: it needs a test tha
 
 ## The decision
 
-No decision has been made. This ADR records the open question, not a choice: exqlite defaults to
-`synchronous: :normal`, and `cell.ex` does not override it. Whether to keep `:normal` or move to
-`:full` is undecided.
+Run every cell at `synchronous: :full`. `AshCell.Repo.check_init/2` sets it with `Keyword.put_new/3`, so a repo that names a level in its config or its `init/2` keeps that level. `:full` is the default, not a requirement. A repo choosing `:normal` for a cell whose contents can be rebuilt is an explicit choice made at the repo.
 
 ## Context
 
@@ -35,9 +34,9 @@ the status quo, not a decision to keep it.
 ### Option B — `synchronous: :full` everywhere
 
 What it buys: a returned `COMMIT` is fsynced, closing the gap with `no_acknowledged_write_lost`.
-What it costs: unknown. No throughput measurement has been taken comparing it against `:normal`.
-The cost is paid by every cell, including ones whose contents are a cache and whose loss window
-nobody would care about.
+What it costs: about 220 µs a single-row commit on a Linux runner, and about 3.9 ms on macOS with `fullfsync`. See the measurement sections below. The cost is paid by every cell, including ones whose contents are a cache, unless their repo opts down.
+
+This is the option taken.
 
 ### Option C — durability as a per-cell policy
 
@@ -57,37 +56,17 @@ conditional, which is worse than either uniform answer.
 
 ## Decision and why
 
-No decision has been made. This is stated plainly and deliberately: the choice between `:normal`
-and `:full` needs a measured throughput comparison, not an assumption in either direction. Nothing
-in the evidence establishes what that comparison would show. Until that measurement exists, this
-ADR records the risk and the question, not an answer.
+The power-loss replay settled it. Under `:normal`, every one of 20 replayed power cuts lost acknowledged commits: the cell held the schema and none of the rows it had acknowledged. Under `:full`, none of 20 lost anything. A default that loses acknowledged writes to a power cut, with nothing raising, is the failure this project exists to avoid.
 
-What it would take to make a decision — and the second half of this is new, because the first half
-alone cannot close it:
+The cost is real but bounded. On Linux `:full` takes a single-row commit from about 49 µs to about 271 µs, so one cell does about 3,700 single-row commits a second instead of about 20,000. The fsync is paid per commit, not per row, so a cell that batches recovers most of it: at 100 rows a transaction `:full` writes about 248,000 rows a second. Cells are separate files, so the total fsync count grows linearly with total commits across the fleet.
 
-**1. Measure the cost.** A throughput and latency comparison of `:normal` versus `:full` (and
-`:extra`) under a realistic write load, measured the way
-[ADR-13](ADR-13-pool-size-one-and-cache.md)'s pool-size question was measured — a probe script,
-median of 5, not an estimate. Include a group-commit variant: batching amortises the fsync, and
-if it makes `:full` affordable then the whole tradeoff changes shape.
+Option C, per-cell policy, is available without being the default: a repo's `init/2` sees the cell key and can set `:synchronous` per cell. The default had to be the safe one. A cell that loses data should be one somebody chose to make lossy.
 
-**2. Build a test that can fail.** This is what has been missing, and it is why the risk has
-stayed live. **Killing the process proves nothing about fsync** — the page cache survives process
-death, so every existing test passes under `:normal` and would keep passing under it no matter how
-wrong `:normal` is. The gap is only observable across a *machine* boundary:
+How it was decided, kept because the method is reusable:
 
-- A VM whose power is cut: run a cell inside QEMU, `kill -9` the VM mid-commit, boot it, and
-  assert the last acknowledged commit is present. Crude, real, and runnable.
-- Better, on Linux CI: `dm-log-writes` or `dm-flakey` to capture the block stream and replay it to
-  an arbitrary prefix, asserting every prefix leaves a valid database and no acknowledged write is
-  missing.
+**1. Measure the cost.** `scripts/synchronous_probe.exs`, median of 5, on macOS and on Linux, including group commit.
 
-[ADR-11](ADR-11-simulate-the-protocol-only.md) is explicit that the simulator models the object
-store and not fsync, so it will keep agreeing with itself regardless. Whatever closes this ADR has
-to touch real I/O.
-
-**3. Decide the shape**, between B and C, with the measurement in hand — and record which claims in
-the docs and demo READMEs become conditional if C wins.
+**2. Build a test that can fail.** Killing the process proves nothing about fsync, because the page cache survives process death. `scripts/power_loss/run.sh` records the block writes through `dm-log-writes` and replays them to each acknowledged commit instead. [ADR-11](ADR-11-simulate-the-protocol-only.md)'s simulator models the object store and not fsync, so it could not have closed this.
 
 ## Measured cost on macOS
 
@@ -142,29 +121,23 @@ What this shows:
 
 ## Consequences
 
-- **What it rules out.** Nothing yet. No choice has been foreclosed.
-- **What it makes worse.** Nothing yet, because nothing has changed.
-- **What stays open.** Everything: whether `:normal` or `:full` is used, and by extension whether
-  `no_acknowledged_write_lost` holds in production. This risk is live right now, not merely
-  theoretical — the current default is `:normal`, unexamined, in a system whose DST suite cannot
-  detect the gap because the simulator does not model fsync behaviour at all.
-- **What now depends on it.** The `ledger` demo (`demos/ledger/docs/design.md`) depends on it
-  directly and should not claim durability until this closes: an event store's entire contract is
-  that the log is the truth, so a lost event there is not stale data but state that never happened,
-  with balances already derived from it. More generally, every structure drafted in
-  `docs/design/DD-05` through `DD-12` inherits whatever is decided here, and
-  [DD-08](../design/DD-08-durable-execution.md) names this ADR as a hard gate on its own work.
+- **What it rules out.** Silent loss of acknowledged commits to a power cut or kernel crash on a cell's own disk, for any cell whose repo does not opt down.
+- **What it makes worse.** Single-row write throughput per cell falls by about five times on a Linux runner. Write-heavy cells that do not batch will notice. On network block storage every commit's fsync uses the volume's IOPS allowance.
+- **What stays open.**
+  - The cost on the disk production uses. The runner is a cloud VM disk.
+  - How many cells committing at `:full` at once one disk sustains. The probe measures one file at a time.
+  - Loss of the node or its disk. `:full` makes the local disk trustworthy. Writes since the last snapshot are still lost if the disk is gone, because snapshots ship on a schedule ([ADR-12](ADR-12-whole-file-snapshots-on-a-schedule.md)). Closing that is Path B in [`docs/spec.md`](../spec.md), still deferred.
+- **What now depends on it.** The `ledger` demo design and [DD-08](../design/DD-08-durable-execution.md), which named this ADR as a gate. `scripts/power_loss/run.sh` and the `durability` CI job, which fail if `:full` ever loses a commit. `test/synchronous_test.exs`, which checks the pragma a cell ends up with.
 
 ## Evidence
 
-- exqlite's default is `synchronous: :normal`; `cell.ex` does not override it.
+- exqlite's default is `synchronous: :normal`. `AshCell.Repo.check_init/2` overrides it to `:full` unless the repo set a level, checked by `test/synchronous_test.exs`.
 - DST invariant `no_acknowledged_write_lost` and the simulator's model of the object store, not
   fsync behaviour, from [ADR-11](ADR-11-simulate-the-protocol-only.md).
 - `:normal` versus `:full` is measured on macOS only; see *Measured cost on macOS*.
 - `synchronous` is settable per connection: `deps/exqlite/lib/exqlite/connection.ex:115`
   (`:extra | :full | :normal | :off`, default `:normal`) and
-  `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:24`. `lib/ash_cell/cell.ex` passes neither, so
-  every cell in the fleet currently runs `:normal` by omission rather than by choice. Read at
+  `deps/ecto_sqlite3/lib/ecto/adapters/sqlite3.ex:24`. Read at
   exqlite 0.33 / ecto_sqlite3 0.21, 2026-08-25.
 - `:full` survives replayed power cuts on ext4 over a Linux block device, and `:normal` does not: the *Power-loss replay* section above, CI run 39661730776.
 - **Not verified:** that `:full` survives a power-loss event on the production filesystem and disk. macOS in particular has a history of `fsync` not
@@ -173,5 +146,4 @@ What this shows:
 
 ## Notes
 
-Named as the top open risk on the project: "could lose data without anyone noticing." A future
-revisit needs the throughput probe described above before this ADR can move to `accepted`.
+Named as the top open risk on the project before it was accepted: "could lose data without anyone noticing." Until 2026-10-22 every cell ran `:normal` by omission, because `lib/ash_cell/cell.ex` passed no level.

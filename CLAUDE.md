@@ -20,8 +20,9 @@ compliance pitch. Each cost real time to find. An ADR is the cheapest way not to
   **Last changed** line. Do not stack a successor ADR on top — git holds the history, and a SHA in
   the **Notes** section points at a specific earlier version.
 - Start from [`docs/decisions/ADR-00-TEMPLATE.md`](docs/decisions/ADR-00-TEMPLATE.md).
-- [ADR-20](docs/decisions/ADR-20-choose-a-durability-level.md) is **open**: `synchronous: :normal`
-  means a returned `COMMIT` is not necessarily fsynced. Do not describe durability as settled.
+- [ADR-20](docs/decisions/ADR-20-choose-a-durability-level.md) is accepted: cells run
+  `synchronous: :full`, so a returned `COMMIT` survives a power cut. It does not survive losing
+  the disk; that is the snapshot interval. Do not describe a commit as durable off the node.
 
 ## Where planning lives
 

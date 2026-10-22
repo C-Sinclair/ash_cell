@@ -532,7 +532,8 @@ Proven by the test suite, against real files and a real MinIO rather than mocks:
 
 Known limits, stated because they are real:
 
-- **Recovery point is ~1 second, not zero.** Replication ships on an interval.
+- **Recovery point is the snapshot interval, not zero.** Snapshots ship on a
+  schedule, up to 60 seconds apart by default. See [How a cell stores data](docs/storage.md).
 - **No aggregates.** AshSqlite doesn't support them. Expression calculations,
   including sort, do work.
 - **Cross-data-layer relationships load only.** A global Postgres table related to a
@@ -551,8 +552,9 @@ Known limits, stated because they are real:
 - **Fan-out reads fall off a cliff, not a slope.** `max_resident` below a page's
   working set makes every read evict a cell the next read wants — measured at 8.9× in
   `demos/shroud`.
-- **Durability is whatever your pragmas say.** `exqlite` defaults `synchronous` to
-  `:normal`, which in WAL mode means a returned `COMMIT` has not been fsynced.
+- **A commit is durable on the node's disk, not off it.** Cells run
+  `synchronous: :full`, so a returned `COMMIT` survives a power cut. Losing the disk
+  loses every write since the last snapshot shipped. A repo can choose a lower level.
 
 ## Demos
 
