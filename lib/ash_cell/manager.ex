@@ -17,6 +17,8 @@ defmodule AshCell.Manager do
   """
   use GenServer
 
+  require Logger
+
   @default_max_resident 256
 
   defstruct [
@@ -24,6 +26,7 @@ defmodule AshCell.Manager do
     :dir,
     :encrypted?,
     :migrations,
+    :migrations_path,
     :max_resident,
     :store,
     :owner,
@@ -78,7 +81,7 @@ defmodule AshCell.Manager do
   # until the registry processes its DOWN. Retrying without yielding just reads the
   # same corpse a few microseconds later: the previous version spun three times
   # inside one scheduler slice and then gave up with `{:error, :cell_died}`, which
-  # surfaced to callers as `:cell_unavailable` for a cell that was about to be
+  # reached callers as `:cell_unavailable` for a cell that was about to be
   # perfectly startable. It looked fine on an idle laptop, where the DOWN often
   # landed first, and failed on a loaded CI runner, where it did not.
   #
@@ -251,25 +254,134 @@ defmodule AshCell.Manager do
 
   Run at deploy time. Eager migration is the primary path precisely because it
   surfaces failures while someone is watching; lazy activation is the fallback for
-  cells that were not in the list.
+  cells that were not in the list. A cell that was already resident is migrated in
+  place with the current migration list and left resident; one that was not is
+  opened, which migrates it, and closed again unless `close_after?: false`.
   """
   def migrate_all(cell_keys, opts \\ []) do
     close_after? = Keyword.get(opts, :close_after?, true)
 
     Enum.map(cell_keys, fn cell_key ->
       result =
-        case ensure_started(cell_key) do
-          {:ok, pid} ->
-            info = AshCell.Cell.info(pid)
-            if close_after?, do: close(cell_key)
-            {:ok, info.schema_version}
-
-          {:error, reason} ->
-            {:error, reason}
+        case AshCell.Registry.lookup(cell_key) do
+          {:ok, pid} -> migrate_resident(pid)
+          :error -> migrate_by_opening(cell_key, close_after?)
         end
 
       {cell_key, result}
     end)
+  end
+
+  defp migrate_resident(pid) do
+    case AshCell.Cell.migrate(pid, migrations()) do
+      {:ok, %{to: version}} -> {:ok, version}
+      {:error, reason} -> {:error, reason}
+    end
+  catch
+    :exit, {:noproc, _} -> {:error, :not_resident}
+  end
+
+  defp migrate_by_opening(cell_key, close_after?) do
+    case ensure_started(cell_key) do
+      {:ok, pid} ->
+        info = AshCell.Cell.info(pid)
+        if close_after?, do: close(cell_key)
+        {:ok, info.schema_version}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @doc """
+  Recompiles the fleet's migration list from `migrations_path`.
+
+  Returns `{:ok, version}`, the highest version in the list, or 0 for none. Every
+  cell activated after this returns opens with the new list; resident cells are
+  untouched until `upgrade/1` or their next open.
+  """
+  def reload_migrations, do: GenServer.call(__MODULE__, :reload_migrations, :infinity)
+
+  @doc "The migration list cells are opened and upgraded with."
+  def migrations, do: GenServer.call(__MODULE__, :migrations)
+
+  @doc """
+  Reloads the migration list and migrates every resident cell in place.
+
+  Returns `{:ok, report}` with the `target` version and each cell under `migrated`,
+  `skipped` (closed before it was reached; it migrates on its next open) or
+  `failed`. A cell whose migration fails is quarantined and closed, as it would be
+  had the failure happened at activation. Pass `concurrency:` to bound how many
+  cells migrate at once.
+  """
+  def upgrade(opts \\ []) do
+    started = System.monotonic_time(:millisecond)
+    {:ok, target} = reload_migrations()
+    migrations = migrations()
+
+    # Listed after the reload, not before. A cell activating concurrently is then
+    # either registered already, and listed here, or starts after the reload with
+    # the new list; listing first would let one slip between the two at the old version.
+    cell_keys = AshCell.Registry.resident_cells()
+
+    results =
+      cell_keys
+      |> Task.async_stream(&upgrade_cell(&1, migrations),
+        max_concurrency: Keyword.get(opts, :concurrency, 4),
+        timeout: :infinity,
+        ordered: true
+      )
+      |> Enum.zip_with(cell_keys, fn {:ok, result}, cell_key -> {cell_key, result} end)
+
+    report = %{
+      target: target,
+      migrated: for({key, {:ok, migrated}} <- results, into: %{}, do: {key, migrated}),
+      skipped: for({key, :not_resident} <- results, do: key),
+      failed: for({key, {:error, reason}} <- results, into: %{}, do: {key, reason}),
+      duration_ms: System.monotonic_time(:millisecond) - started
+    }
+
+    log_upgrade(report)
+    {:ok, report}
+  end
+
+  defp upgrade_cell(cell_key, migrations) do
+    with {:ok, pid} <- AshCell.Registry.lookup(cell_key),
+         {us, {:ok, migrated}} <- :timer.tc(fn -> AshCell.Cell.migrate(pid, migrations) end) do
+      {:ok, Map.put(migrated, :duration_ms, div(us, 1000))}
+    else
+      :error ->
+        :not_resident
+
+      {_us, {:error, reason}} ->
+        fail_upgrade(cell_key, reason)
+    end
+  catch
+    # A cell closed under the upgrade, by a drain or an eviction, exits the call the
+    # same way a crash does. Its migration's transaction died with it, so it is not
+    # half-migrated and must not be quarantined.
+    :exit, {reason, _} when reason in [:noproc, :normal, :shutdown] -> :not_resident
+    :exit, {{:shutdown, _}, _} -> :not_resident
+    :exit, {reason, _} -> fail_upgrade(cell_key, reason)
+  end
+
+  defp fail_upgrade(cell_key, reason) do
+    :ok = GenServer.call(__MODULE__, {:quarantine, cell_key, reason})
+    close(cell_key, force: true)
+    {:error, reason}
+  end
+
+  defp log_upgrade(%{failed: failed} = report) when map_size(failed) == 0 do
+    Logger.info(
+      "upgraded #{map_size(report.migrated)} cell(s) to #{report.target} in #{report.duration_ms}ms"
+    )
+  end
+
+  defp log_upgrade(report) do
+    Logger.error(
+      "upgraded #{map_size(report.migrated)} cell(s) to #{report.target} in #{report.duration_ms}ms, " <>
+        "#{map_size(report.failed)} failed and were quarantined: #{inspect(Map.keys(report.failed))}"
+    )
   end
 
   def path_for(cell_key), do: GenServer.call(__MODULE__, {:path_for, cell_key})
@@ -278,13 +390,16 @@ defmodule AshCell.Manager do
 
   @impl true
   def init(opts) do
+    migrations_path = Keyword.get(opts, :migrations_path)
+
     state = %__MODULE__{
       repo: Keyword.fetch!(opts, :repo),
       dir: Keyword.fetch!(opts, :dir),
       encrypted?: Keyword.get(opts, :encrypted?, false),
       # Compiled once per fleet, not per cell, the way AshSqlite's tenant
       # supervisor does.
-      migrations: AshCell.Migrations.compile(Keyword.get(opts, :migrations_path)),
+      migrations: AshCell.Migrations.compile(migrations_path),
+      migrations_path: migrations_path,
       max_resident: Keyword.get(opts, :max_resident, @default_max_resident),
       store: Keyword.get(opts, :store),
       snapshot: AshCell.SnapshotPolicy.new(Keyword.get(opts, :snapshot), opts),
@@ -425,6 +540,17 @@ defmodule AshCell.Manager do
   def handle_call({:abandoned, cell_key}, _from, state) do
     {:reply, :ok, %{state | shipping: MapSet.delete(state.shipping, cell_key)}}
   end
+
+  def handle_call(:reload_migrations, _from, state) do
+    migrations = AshCell.Migrations.compile(state.migrations_path)
+    target = migrations |> Enum.map(&elem(&1, 0)) |> Enum.max(fn -> 0 end)
+    {:reply, {:ok, target}, %{state | migrations: migrations}}
+  end
+
+  def handle_call(:migrations, _from, state), do: {:reply, state.migrations, state}
+
+  def handle_call({:quarantine, cell_key, reason}, _from, state),
+    do: {:reply, :ok, quarantine(state, cell_key, reason)}
 
   def handle_call(:quarantined, _from, state), do: {:reply, state.quarantined, state}
 

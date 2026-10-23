@@ -45,6 +45,7 @@ live in [`../design/`](../design), and reference these.
 | [23](ADR-23-merge-by-fast-forward-or-refuse.md) | Merge a branch only when its origin has not moved; refuse divergence rather than reconcile it, and measure divergence by content digest | accepted |
 | [24](ADR-24-a-segment-set-is-not-a-disjoint-cover.md) | A stream reader de-duplicates by offset and does not trust the store's listing to be duplicate-free | corrects an earlier belief |
 | [30](ADR-30-route-the-store-by-cell-key.md) | Choose a cell's object store from its cell key, through `store_for/1` | accepted |
+| [31](ADR-31-upgrade-resident-cells-in-place.md) | Upgrade a running fleet by migrating resident cells in place on their own connection, then loading code | accepted |
 
 ## Performance, encryption, integration
 
@@ -98,7 +99,7 @@ false. Do not reintroduce the superseded position:
 ## Still open
 
 Not yet worth an ADR each: the cost of `synchronous: :full` on the production disk and under many
-concurrent cells ([ADR-20](ADR-20-choose-a-durability-level.md)); every deploy migrates every cell; reads are not fenced the way writes
+concurrent cells ([ADR-20](ADR-20-choose-a-durability-level.md)); every deploy migrates every cell; a cold cell's activation migrates inside `AshCell.Manager`'s call, so one slow migration delays every other activation on the node ([ADR-31](ADR-31-upgrade-resident-cells-in-place.md)); reads are not fenced the way writes
 are; background jobs have no request boundary to route at; thundering herd on node loss;
 snapshot and restore
 are non-atomic whole-file operations; `assert_bound!/0` cannot detect a tenant mismatch; a

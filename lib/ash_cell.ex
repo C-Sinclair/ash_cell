@@ -453,6 +453,19 @@ defmodule AshCell do
   @doc "Absolute path of a tenant's database file."
   defdelegate path_for(tenant), to: AshCell.Manager
 
+  @doc """
+  Migrates every resident cell in place to the newest migration on disk.
+
+  The caller owns the order: deliver the migration files, call this, and load the
+  new code only once the report's `failed` is empty. That works only for an additive
+  (expand/contract) migration, because one module version serves every cell at
+  once. See `AshCell.Manager.upgrade/1`.
+  """
+  defdelegate upgrade(opts \\ []), to: AshCell.Manager
+
+  @doc "Recompiles the migration list, so cells opened from now on use it."
+  defdelegate reload_migrations(), to: AshCell.Manager
+
   @doc "Tenants with a resident (open) cell right now."
   defdelegate resident_cells(), to: AshCell.Registry
 

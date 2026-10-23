@@ -30,6 +30,7 @@ that, and the number came back and reversed the design.
 | [DD-12](DD-12-search-and-vector-indexes.md) | FTS5 and `sqlite-vec` inside the cell | draft |
 | [DD-13](DD-13-durable-streams.md) | Offset-keyed segments in the object store, and resume across the writer's death | building |
 | [DD-14](DD-14-leadership-from-the-bucket.md) | Leader election by conditional write, and an `Oban.Peer` with no Postgres | draft |
+| [DD-15](DD-15-live-schema-upgrade.md) | Upgrading a running fleet's schema and code on one node, cell by cell | building |
 
 DD-01 to DD-04 were written *after* the code, to record what exists. Anything new should get its
 design doc first.

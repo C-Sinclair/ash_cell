@@ -26,6 +26,8 @@ defmodule AshCell.Cell do
     :store,
     :policy,
     :last_ship_at,
+    :migrating,
+    migrate_queue: :queue.new(),
     queries: 0,
     ships: 0
   ]
@@ -40,6 +42,16 @@ defmodule AshCell.Cell do
 
   @doc "Snapshot of this cell's state, for the fleet view."
   def info(pid), do: GenServer.call(pid, :info)
+
+  @doc """
+  Runs `migrations` on this cell while it keeps serving.
+
+  Returns `{:ok, %{from: version, to: version}}`, or `{:error, reason}` with the
+  cell left at whatever version the failed run reached. Two upgrades of one cell
+  run one after the other.
+  """
+  def migrate(pid, migrations, timeout \\ :infinity),
+    do: GenServer.call(pid, {:migrate, migrations}, timeout)
 
   def note_query(pid), do: GenServer.cast(pid, :note_query)
 
@@ -116,6 +128,16 @@ defmodule AshCell.Cell do
     {:reply, :ok, %{state | repo_pid: nil}}
   end
 
+  # Not gated by `AshCell.Registry.begin_closing/1`: the pool of one already queues
+  # statements behind the migration's transaction, and the closing gate gives up after 1s.
+  def handle_call({:migrate, migrations}, from, %{migrating: nil} = state) do
+    {:noreply, start_migration(state, from, migrations)}
+  end
+
+  def handle_call({:migrate, migrations}, from, state) do
+    {:noreply, %{state | migrate_queue: :queue.in({from, migrations}, state.migrate_queue)}}
+  end
+
   def handle_call(:repo_stopped?, _from, state), do: {:reply, is_nil(state.repo_pid), state}
 
   def handle_call(:repo_pid, _from, state), do: {:reply, state.repo_pid, state}
@@ -164,7 +186,48 @@ defmodule AshCell.Cell do
     {:noreply, state}
   end
 
+  def handle_info({ref, result}, %{migrating: {ref, from, _}} = state) do
+    Process.demonitor(ref, [:flush])
+    {:noreply, finish_migration(state, from, result)}
+  end
+
+  def handle_info({:DOWN, ref, :process, _, reason}, %{migrating: {ref, from, _}} = state) do
+    {:noreply, finish_migration(state, from, {:error, {:migration_crashed, reason}})}
+  end
+
   def handle_info(_, state), do: {:noreply, state}
+
+  # Off this process, in a task, because a request reaches its repo pid through
+  # `repo_pid/1`. A request holding the pool's one connection inside a transaction
+  # would wait on this process while the migration waited on that connection, until
+  # DBConnection dropped one of them. The queue keeps two upgrades of a cell in order.
+  defp start_migration(state, from, migrations) do
+    %{repo: repo, repo_pid: repo_pid} = state
+    task = Task.async(fn -> AshCell.Migrations.run(repo, repo_pid, migrations) end)
+    %{state | migrating: {task.ref, from, state.schema_version}}
+  end
+
+  defp finish_migration(%{migrating: {_, _, old}} = state, from, result) do
+    state =
+      case result do
+        {:ok, version} ->
+          AshCell.ReadCache.invalidate(state.cell_key)
+          GenServer.reply(from, {:ok, %{from: old, to: version}})
+          %{state | schema_version: version}
+
+        {:error, reason} ->
+          GenServer.reply(from, {:error, reason})
+          state
+      end
+
+    case :queue.out(state.migrate_queue) do
+      {{:value, {next, migrations}}, rest} ->
+        start_migration(%{state | migrate_queue: rest, migrating: nil}, next, migrations)
+
+      {:empty, _} ->
+        %{state | migrating: nil}
+    end
+  end
 
   # Off this process on purpose. Shipping is a whole-file PUT, so doing it in the
   # cell would block every query for this cell for as long as the upload takes --

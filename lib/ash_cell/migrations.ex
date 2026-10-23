@@ -14,8 +14,8 @@ defmodule AshCell.Migrations do
   works for 900 clinics and fails on the 901st takes down that clinic alone, at
   whatever hour it next wakes up, so `mix ash_cell.migrate` walks every tenant at
   deploy time while someone is watching. Application code must tolerate a version
-  window, since a cell opened before a deploy stays at the old version until it
-  next opens.
+  window, since a resident cell stays at its version until `AshCell.upgrade/1`
+  reaches it or it next opens.
 
   ## Cells migrated by `AshCell.Migrator`
 

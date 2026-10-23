@@ -12,6 +12,11 @@ out in a minor version bump and are called out here with what to change.
 
 ### Added
 
+- **`AshCell.upgrade/1` and `AshCell.reload_migrations/0`.** A running node picks
+  up new migration files with `reload_migrations/0`, and `upgrade/1` migrates
+  every resident cell in place on its own connection, without closing it. A cell
+  whose migration fails is quarantined. Load new code only after the report's
+  `failed` is empty, and only for additive migrations. See ADR-31.
 - **`AshCell.claim/2`.** Takes a cell's lease on this node, restores its newest
   snapshot when the lease was taken rather than renewed (or when there is no
   local file), and opens it. `AshCell.Lease.claim/4` reports which happened as
@@ -19,6 +24,10 @@ out in a minor version bump and are called out here with what to change.
 
 ### Changed
 
+- **`AshCell.Manager.migrate_all/2` migrates a resident cell in place.** It used
+  to report the version the cell opened at and then close it. It now migrates
+  the cell with the current migration list, reports the true version, and leaves
+  it open.
 - **Upstream `ash_sqlite`, not the fork.** AshCell pins `ash-project/ash_sqlite`
   at `a8aaad3` and requires ash `~> 3.33 and >= 3.33.2`. Define a cell repo with
   `use AshCell.Repo` instead of `use AshSqlite.Repo`; it implements
