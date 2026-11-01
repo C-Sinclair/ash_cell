@@ -50,7 +50,8 @@ defmodule AshCell.Binder do
 
   @doc """
   The repo instance for `tenant`'s cell. Raises `AshCell.CellUnavailableError`
-  rather than returning an unbound repo.
+  rather than returning an unbound repo, and `AshCell.ReadOnlyCellError` for a write
+  to a cell opened with `AshCell.open_read_only/2`.
 
   `context.type` is `:mutate` for a write or for opening a transaction, which opens
   a write on the cell for `AshCell.ReadCache`.
@@ -61,7 +62,15 @@ defmodule AshCell.Binder do
 
     case AshCell.repo_for_cell(cell_key) do
       {:ok, repo_pid} ->
-        if type == :mutate, do: AshCell.ReadCache.open_write(cell_key)
+        if type == :mutate do
+          # Before the statement, so a write to a restored copy never reaches SQLite
+          # and fails here with a reason rather than as a SQLite readonly error.
+          if AshCell.Registry.read_only?(repo_pid),
+            do: raise(AshCell.ReadOnlyCellError, cell_key: cell_key)
+
+          AshCell.ReadCache.open_write(cell_key)
+        end
+
         repo_pid
 
       {:error, reason} ->

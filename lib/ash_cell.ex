@@ -494,12 +494,59 @@ defmodule AshCell do
     owner = AshCell.Manager.owner()
 
     with {:ok, lease} <- claim_lease(store, cell_key, owner, opts),
+         :ok <- leave_read_only(cell_key),
          :ok <- maybe_restore(store, cell_key, lease),
          # After the restore, because restoring closes the cell and closing forgets
          # its lease.
          :ok <- AshCell.Manager.put_lease(cell_key, lease),
          {:ok, _cell} <- AshCell.Manager.ensure_started(cell_key) do
       {:ok, lease}
+    end
+  end
+
+  # A cell left open read-only would keep refusing writes under the lease, since a
+  # resident cell keeps the mode it opened with.
+  defp leave_read_only(cell_key) do
+    if AshCell.Manager.set_read_only(cell_key, false),
+      do: AshCell.Manager.close(cell_key, await_repo?: true)
+
+    :ok
+  end
+
+  @doc """
+  Opens `tenant`'s cell read-only on this node, from the newest snapshot.
+
+  For a node that serves reads of a cell another node writes. Restores the newest
+  snapshot over the local file, then opens the cell with a read-only connection: a
+  write through a resource raises `AshCell.ReadOnlyCellError`, and a raw write fails
+  in SQLite. The cell stays read-only on this node, across closes, until
+  `claim/2` takes its lease. Call again to read a newer snapshot.
+
+  Returns `{:ok, %{txid: txid, bytes: bytes}}`, `{:error, :not_found}` for a cell
+  that has never shipped, or `{:error, :lease_held}` while this node holds the
+  lease, because restoring would replace its unshipped writes.
+  """
+  @spec open_read_only(term()) :: {:ok, map()} | {:error, term()}
+  def open_read_only(tenant) do
+    cell_key = AshCell.CellKey.resolve(tenant)
+    store = require_store!(cell_key)
+    owner = AshCell.Manager.owner()
+
+    with :ok <- refuse_held(store, cell_key, owner),
+         {:ok, restored} <- AshCell.Replicator.restore(store, cell_key),
+         _was? = AshCell.Manager.set_read_only(cell_key, true),
+         {:ok, _cell} <- AshCell.Manager.ensure_started(cell_key) do
+      {:ok, restored}
+    end
+  end
+
+  # The store as well as the manager, because the manager forgets a lease when the
+  # cell closes while the store still says this node holds it.
+  defp refuse_held(store, cell_key, owner) do
+    cond do
+      AshCell.Manager.lease(cell_key) -> {:error, :lease_held}
+      AshCell.Lease.holder(store, cell_key) == {:ok, owner} -> {:error, :lease_held}
+      true -> :ok
     end
   end
 

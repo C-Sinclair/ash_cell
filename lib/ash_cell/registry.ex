@@ -50,6 +50,18 @@ defmodule AshCell.Registry do
     :ok
   end
 
+  @doc """
+  Records that `repo_pid` serves a read-only cell. Called by the cell itself, so the
+  mark goes when the cell does.
+  """
+  def put_read_only(repo_pid) do
+    {:ok, _} = Registry.register(@repos, {:read_only, repo_pid}, true)
+    :ok
+  end
+
+  @doc "Whether `repo_pid` serves a cell opened with `AshCell.open_read_only/2`."
+  def read_only?(repo_pid), do: Registry.lookup(@repos, {:read_only, repo_pid}) != []
+
   @doc "Forgets the repo instance of `cell_key`, once the cell has stopped it."
   def drop_repo(cell_key, repo_pid) do
     Registry.update_value(__MODULE__, cell_key, fn _ -> nil end)

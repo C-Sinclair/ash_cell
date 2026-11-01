@@ -35,6 +35,7 @@ defmodule AshCell.Manager do
     quarantined: %{},
     leases: %{},
     shipping: MapSet.new(),
+    read_only: MapSet.new(),
     sealed?: false
   ]
 
@@ -177,6 +178,15 @@ defmodule AshCell.Manager do
   Forgets the lease held for `cell_key` after it was released, if it still has `etag`.
   """
   def released(cell_key, etag), do: GenServer.call(__MODULE__, {:released, cell_key, etag})
+
+  @doc """
+  Sets whether `cell_key` opens read-only on this node, from its next activation on.
+
+  Returns whether it was read-only before. A resident cell keeps the mode it opened
+  with until it is closed.
+  """
+  def set_read_only(cell_key, read_only?),
+    do: GenServer.call(__MODULE__, {:set_read_only, cell_key, read_only?})
 
   @doc "Every lease this node holds, by cell key."
   def leases, do: GenServer.call(__MODULE__, :leases)
@@ -469,6 +479,7 @@ defmodule AshCell.Manager do
           path: path(state, cell_key),
           encrypted?: state.encrypted?,
           migrations: state.migrations,
+          read_only?: MapSet.member?(state.read_only, cell_key),
           store: store,
           policy: state.snapshot
         ]
@@ -567,6 +578,17 @@ defmodule AshCell.Manager do
   end
 
   def handle_call(:leases, _from, state), do: {:reply, state.leases, state}
+
+  def handle_call({:set_read_only, cell_key, read_only?}, _from, state) do
+    was? = MapSet.member?(state.read_only, cell_key)
+
+    read_only =
+      if read_only?,
+        do: MapSet.put(state.read_only, cell_key),
+        else: MapSet.delete(state.read_only, cell_key)
+
+    {:reply, was?, %{state | read_only: read_only}}
+  end
 
   def handle_call({:claim_txid, cell_key}, _from, state) do
     cond do

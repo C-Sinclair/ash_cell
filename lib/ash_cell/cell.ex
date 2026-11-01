@@ -69,6 +69,7 @@ defmodule AshCell.Cell do
     repo = Keyword.fetch!(opts, :repo)
     path = Keyword.fetch!(opts, :path)
     migrations = Keyword.get(opts, :migrations, [])
+    read_only? = Keyword.get(opts, :read_only?, false)
     policy = Keyword.get(opts, :policy) || %AshCell.SnapshotPolicy{enabled?: false}
 
     File.mkdir_p!(Path.dirname(path))
@@ -89,13 +90,16 @@ defmodule AshCell.Cell do
       encrypted?: Keyword.get(opts, :encrypted?, false)
     ]
 
+    repo_opts = if read_only?, do: Keyword.put(repo_opts, :mode, :readonly), else: repo_opts
+
     with {:ok, repo_pid} <- repo.start_link(repo_opts),
-         # Before init/1 returns, so no statement reaches a half-migrated schema.
-         {:ok, version} <- AshCell.Migrations.run(repo, repo_pid, migrations) do
+         {:ok, version} <- open_schema(repo, repo_pid, migrations, read_only?) do
       now = System.monotonic_time(:millisecond)
       AshCell.Registry.put_repo(cell_key, repo_pid)
+      if read_only?, do: AshCell.Registry.put_read_only(repo_pid)
 
-      if policy.enabled? do
+      # A read-only cell holds no lease, so it has nothing to ship.
+      if policy.enabled? and not read_only? do
         Process.send_after(self(), :maybe_ship, AshCell.SnapshotPolicy.initial_delay(policy))
       end
 
@@ -117,6 +121,14 @@ defmodule AshCell.Cell do
       {:error, reason} -> {:stop, reason}
     end
   end
+
+  # Before init/1 returns, so no statement reaches a half-migrated schema. A read-only
+  # cell is a restored snapshot and serves the schema it was shipped with.
+  defp open_schema(_repo, repo_pid, _migrations, true),
+    do: {:ok, AshCell.Migrations.recorded_version(repo_pid)}
+
+  defp open_schema(repo, repo_pid, migrations, false),
+    do: AshCell.Migrations.run(repo, repo_pid, migrations)
 
   @impl true
   def handle_call(:stop_repo, _from, state) do

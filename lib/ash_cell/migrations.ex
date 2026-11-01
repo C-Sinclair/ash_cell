@@ -115,6 +115,22 @@ defmodule AshCell.Migrations do
     repo |> migrated_versions(repo_pid) |> Enum.max(fn -> 0 end)
   end
 
+  @doc """
+  The highest version in the cell's `schema_migrations`, or 0, without creating the
+  table. For a cell opened read-only.
+  """
+  @spec recorded_version(pid()) :: non_neg_integer()
+  def recorded_version(repo_pid) do
+    if schema_migrations?(repo_pid) do
+      %{rows: [[version]]} =
+        Ecto.Adapters.SQL.query!(repo_pid, "SELECT max(version) FROM schema_migrations", [])
+
+      version || 0
+    else
+      0
+    end
+  end
+
   defp migrated_versions(repo, repo_pid),
     do: Ecto.Migrator.migrated_versions(repo, dynamic_repo: repo_pid, log: false)
 

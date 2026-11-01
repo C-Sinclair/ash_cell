@@ -48,6 +48,7 @@ live in [`../design/`](../design), and reference these.
 | [31](ADR-31-upgrade-resident-cells-in-place.md) | Upgrade a running fleet by migrating resident cells in place on their own connection, then loading code | accepted |
 | [32](ADR-32-release-a-lease-by-conditional-write.md) | Release a lease by a conditional PUT of an ownerless lease, because MinIO ignores `If-Match` on DELETE | accepted |
 | [33](ADR-33-renew-leases-from-one-process-per-fleet.md) | Renew leases from one process per fleet, and release through it | accepted |
+| [34](ADR-34-open-a-restored-cell-read-only.md) | Open a restored cell read-only, and refuse its writes in the binder | accepted |
 
 ## Performance, encryption, integration
 
