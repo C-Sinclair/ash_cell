@@ -46,6 +46,7 @@ live in [`../design/`](../design), and reference these.
 | [24](ADR-24-a-segment-set-is-not-a-disjoint-cover.md) | A stream reader de-duplicates by offset and does not trust the store's listing to be duplicate-free | corrects an earlier belief |
 | [30](ADR-30-route-the-store-by-cell-key.md) | Choose a cell's object store from its cell key, through `store_for/1` | accepted |
 | [31](ADR-31-upgrade-resident-cells-in-place.md) | Upgrade a running fleet by migrating resident cells in place on their own connection, then loading code | accepted |
+| [32](ADR-32-release-a-lease-by-conditional-write.md) | Release a lease by a conditional PUT of an ownerless lease, because MinIO ignores `If-Match` on DELETE | accepted |
 
 ## Performance, encryption, integration
 

@@ -120,6 +120,10 @@ defmodule AshCell.Drain do
 
   Exposed for tests and for targeted operational use — moving a single noisy
   tenant off a node without draining everything else.
+
+  Waits up to `grace_ms` for a shipment already in flight, then ships again. Returns
+  `{:error, :ship_in_flight}` if that shipment does not finish in time, and
+  `{:error, :lease_taken}`, with the cell fenced, if another owner holds the lease.
   """
   def drain_cell(cell_key, store \\ nil, grace_ms \\ @default_grace_ms) do
     store =
@@ -135,7 +139,7 @@ defmodule AshCell.Drain do
     AshCell.Registry.begin_closing(cell_key)
 
     with :ok <- checkpoint(cell_key),
-         {:ok, snapshot} <- snapshot(cell_key, store),
+         {:ok, snapshot} <- snapshot(cell_key, store, grace_ms),
          :ok <- release_lease(cell_key, store) do
       AshCell.Manager.close(cell_key)
       {:ok, %{quiesced?: quiesced?, snapshot: snapshot}}
@@ -217,16 +221,47 @@ defmodule AshCell.Drain do
 
   # With no object store configured the cell is a local file and closing it is the
   # whole job; there is nowhere to hand it over to.
-  defp snapshot(_cell_key, nil), do: {:ok, :no_store}
+  defp snapshot(_cell_key, nil, _grace_ms), do: {:ok, :no_store}
 
-  defp snapshot(cell_key, store), do: AshCell.Replicator.ship(store, cell_key)
+  defp snapshot(cell_key, store, grace_ms) do
+    ship_after_in_flight(cell_key, store, System.monotonic_time(:millisecond) + grace_ms)
+  end
+
+  # A shipment already in flight is not this drain's shipment. Its snapshot may
+  # predate the checkpoint above, so it is waited for and then shipped again.
+  defp ship_after_in_flight(cell_key, store, deadline) do
+    case AshCell.Replicator.ship(store, cell_key) do
+      {:ok, :in_flight} ->
+        if System.monotonic_time(:millisecond) >= deadline do
+          {:error, :ship_in_flight}
+        else
+          Process.sleep(@poll_ms)
+          ship_after_in_flight(cell_key, store, deadline)
+        end
+
+      result ->
+        result
+    end
+  end
 
   defp release_lease(_cell_key, nil), do: :ok
 
   defp release_lease(cell_key, store) do
     case AshCell.Manager.lease(cell_key) do
-      nil -> :ok
-      lease -> AshCell.Lease.release(store, lease)
+      nil ->
+        :ok
+
+      lease ->
+        case AshCell.Lease.release(store, lease) do
+          # Another owner holds the lease, so this node is serving a cell it does
+          # not own, exactly as when a shipment is refused (ADR-10, ADR-32).
+          {:error, :precondition_failed} ->
+            AshCell.Manager.fence(cell_key)
+            {:error, :lease_taken}
+
+          result ->
+            result
+        end
     end
   end
 

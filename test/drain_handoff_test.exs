@@ -114,6 +114,56 @@ defmodule AshCell.DrainHandoffTest do
     end
   end
 
+  describe "a shipment already in flight" do
+    test "is waited for, and the drain ships again after it",
+         %{store: store, tenant: tenant} do
+      # The reservation stands in for the cell's periodic shipment, whose snapshot
+      # may have been taken before this row was written. Treating `:in_flight` as
+      # shipped released the lease with the row only on this disk.
+      {:ok, lease} = Lease.claim(store, tenant, "node-a", ttl_ms: 60_000)
+      AshCell.Manager.put_lease(tenant, lease)
+      write(tenant, "Behind The Periodic Shipment")
+      {:ok, _txid} = AshCell.Manager.claim_txid(tenant)
+
+      drain = Task.async(fn -> AshCell.Drain.drain_cell(tenant, store, 2_000) end)
+      Process.sleep(200)
+      refute Task.yield(drain, 0)
+      :ok = AshCell.Manager.abandoned(tenant)
+
+      assert {:ok, %{snapshot: %{txid: 1}}} = Task.await(drain)
+      assert {:ok, %Lease{owner: "node-b"}} = Lease.claim(store, tenant, "node-b", ttl_ms: 60_000)
+      assert {:ok, _} = Replicator.restore(store, tenant)
+      assert ["Behind The Periodic Shipment"] = read(tenant)
+    end
+
+    test "that never finishes fails the drain and keeps the lease",
+         %{store: store, tenant: tenant} do
+      {:ok, lease} = Lease.claim(store, tenant, "node-a", ttl_ms: 60_000)
+      AshCell.Manager.put_lease(tenant, lease)
+      write(tenant, "Row")
+      {:ok, _txid} = AshCell.Manager.claim_txid(tenant)
+
+      assert {:error, :ship_in_flight} = AshCell.Drain.drain_cell(tenant, store, 200)
+      assert {:ok, "node-a"} = Lease.holder(store, tenant)
+    end
+  end
+
+  describe "a displaced node" do
+    test "leaves its successor's lease in place and stops serving the cell",
+         %{store: store, tenant: tenant} do
+      {:ok, lease} = Lease.claim(store, tenant, "node-a", ttl_ms: 1)
+      AshCell.Manager.put_lease(tenant, lease)
+      write(tenant, "Row")
+      Process.sleep(5)
+      {:ok, _} = Lease.claim(store, tenant, "node-b", ttl_ms: 60_000)
+
+      assert {:error, :lease_taken} = AshCell.Drain.drain_cell(tenant, store, 500)
+      assert {:ok, "node-b"} = Lease.holder(store, tenant)
+      assert AshCell.Manager.quarantined()[tenant] == :fenced
+      refute tenant in AshCell.resident_cells()
+    end
+  end
+
   describe "when draining fails" do
     test "the lease is kept rather than released", %{store: store, tenant: tenant} do
       {:ok, lease} = Lease.claim(store, tenant, "node-a", ttl_ms: 60_000)
