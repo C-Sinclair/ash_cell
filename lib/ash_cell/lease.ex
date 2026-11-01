@@ -33,6 +33,11 @@ defmodule AshCell.Lease do
   is the opposite of how a consensus system fails, and it is why clock skew is not
   a correctness concern here.
 
+  It does cost the displaced owner's commits since its last shipment, which were
+  acknowledged locally and are refused at the next one. A writer whose clock lags
+  its readers by more than the renewal margin pays that on every request another
+  node serves; `docs/spec.md` section 8 records it as an open question.
+
   This paragraph was false for as long as durability was keyed by generation, and
   it is worth saying why rather than quietly fixing it. Successive owners never
   share a generation, so their conditional writes addressed different keys and
