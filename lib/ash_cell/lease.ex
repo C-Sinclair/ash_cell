@@ -49,10 +49,23 @@ defmodule AshCell.Lease do
   """
 
   # `renewed?` is true when `claim/4` found this owner already holding the lease.
-  # It is not stored in the object; it says which branch of `claim/4` ran.
-  defstruct [:cell_key, :owner, :etag, :expires_at, :generation, :txid, renewed?: false]
+  # It is not stored in the object; it says which branch of `claim/4` ran. Nor is
+  # `ttl_ms`, which `AshCell.LeaseRenewer` renews with.
+  defstruct [
+    :cell_key,
+    :owner,
+    :etag,
+    :expires_at,
+    :generation,
+    :txid,
+    :ttl_ms,
+    renewed?: false
+  ]
 
   @default_ttl_ms 30_000
+
+  @doc "The TTL a claim or renewal asks for when given no `:ttl_ms`."
+  def default_ttl_ms, do: @default_ttl_ms
 
   def key(cell_key), do: "cells/#{AshCell.CellKey.encode(cell_key)}/lease.json"
 
@@ -79,7 +92,9 @@ defmodule AshCell.Lease do
     ttl = Keyword.get(opts, :ttl_ms, @default_ttl_ms)
     now = System.system_time(:millisecond)
 
-    case AshCell.ObjectStore.get(store, key(cell_key)) do
+    store
+    |> AshCell.ObjectStore.get(key(cell_key))
+    |> case do
       {:error, :not_found} ->
         # Nobody holds it. If-None-Match means only one racer can create it.
         take(store, cell_key, owner, now + ttl, if_none_match: true)
@@ -113,6 +128,7 @@ defmodule AshCell.Lease do
       {:error, reason} ->
         {:error, reason}
     end
+    |> with_ttl(ttl)
   end
 
   # Taking a cell from somebody else -- or from nobody -- means allocating a fresh
@@ -151,10 +167,15 @@ defmodule AshCell.Lease do
     ttl = Keyword.get(opts, :ttl_ms, @default_ttl_ms)
     expires = System.system_time(:millisecond) + ttl
 
-    write(store, lease.cell_key, lease.owner, expires, lease.generation, lease.txid,
+    store
+    |> write(lease.cell_key, lease.owner, expires, lease.generation, lease.txid,
       if_match: lease.etag
     )
+    |> with_ttl(ttl)
   end
+
+  defp with_ttl({:ok, lease}, ttl), do: {:ok, %{lease | ttl_ms: ttl}}
+  defp with_ttl(other, _ttl), do: other
 
   @doc """
   Releases a lease so another node can take it without waiting for expiry.

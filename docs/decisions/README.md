@@ -47,6 +47,7 @@ live in [`../design/`](../design), and reference these.
 | [30](ADR-30-route-the-store-by-cell-key.md) | Choose a cell's object store from its cell key, through `store_for/1` | accepted |
 | [31](ADR-31-upgrade-resident-cells-in-place.md) | Upgrade a running fleet by migrating resident cells in place on their own connection, then loading code | accepted |
 | [32](ADR-32-release-a-lease-by-conditional-write.md) | Release a lease by a conditional PUT of an ownerless lease, because MinIO ignores `If-Match` on DELETE | accepted |
+| [33](ADR-33-renew-leases-from-one-process-per-fleet.md) | Renew leases from one process per fleet, and release through it | accepted |
 
 ## Performance, encryption, integration
 

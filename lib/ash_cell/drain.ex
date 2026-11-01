@@ -247,21 +247,15 @@ defmodule AshCell.Drain do
   defp release_lease(_cell_key, nil), do: :ok
 
   defp release_lease(cell_key, store) do
-    case AshCell.Manager.lease(cell_key) do
-      nil ->
-        :ok
+    case AshCell.LeaseRenewer.release(cell_key, store) do
+      # Another owner holds the lease, so this node is serving a cell it does not
+      # own, exactly as when a shipment is refused (ADR-10, ADR-32).
+      {:error, :lease_taken} ->
+        AshCell.Manager.fence(cell_key)
+        {:error, :lease_taken}
 
-      lease ->
-        case AshCell.Lease.release(store, lease) do
-          # Another owner holds the lease, so this node is serving a cell it does
-          # not own, exactly as when a shipment is refused (ADR-10, ADR-32).
-          {:error, :precondition_failed} ->
-            AshCell.Manager.fence(cell_key)
-            {:error, :lease_taken}
-
-          result ->
-            result
-        end
+      result ->
+        result
     end
   end
 

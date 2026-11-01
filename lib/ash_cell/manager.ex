@@ -164,6 +164,24 @@ defmodule AshCell.Manager do
   def put_lease(cell_key, lease), do: GenServer.call(__MODULE__, {:put_lease, cell_key, lease})
 
   @doc """
+  Records a renewal of the lease held for `cell_key`.
+
+  Takes `etag`, `expires_at` and `ttl_ms` from `renewed` and keeps the held txid,
+  which `committed/2` may have advanced since the renewal read it. Returns
+  `{:error, :stale}`, recording nothing, unless the held lease still has `from_etag`.
+  """
+  def renewed(cell_key, from_etag, %AshCell.Lease{} = renewed),
+    do: GenServer.call(__MODULE__, {:renewed, cell_key, from_etag, renewed})
+
+  @doc """
+  Forgets the lease held for `cell_key` after it was released, if it still has `etag`.
+  """
+  def released(cell_key, etag), do: GenServer.call(__MODULE__, {:released, cell_key, etag})
+
+  @doc "Every lease this node holds, by cell key."
+  def leases, do: GenServer.call(__MODULE__, :leases)
+
+  @doc """
   Closes a cell. The database file is untouched.
 
   Waits briefly for in-flight work to finish first. Yanking a cell that a process
@@ -509,8 +527,46 @@ defmodule AshCell.Manager do
   def handle_call({:lease, cell_key}, _from, state), do: {:reply, state.leases[cell_key], state}
 
   def handle_call({:put_lease, cell_key, lease}, _from, state) do
+    lease =
+      case state.leases[cell_key] do
+        # The same tenure, re-recorded by a renewal claim. Its txid was read from the
+        # store and may trail a shipment that committed since; txids only advance
+        # within a generation.
+        %{generation: generation, txid: held} when generation == lease.generation ->
+          %{lease | txid: max(held || 0, lease.txid || 0)}
+
+        _ ->
+          lease
+      end
+
     {:reply, :ok, %{state | leases: Map.put(state.leases, cell_key, lease)}}
   end
+
+  def handle_call({:renewed, cell_key, from_etag, renewed}, _from, state) do
+    case state.leases[cell_key] do
+      %{etag: ^from_etag} = held ->
+        lease = %{
+          held
+          | etag: renewed.etag,
+            expires_at: renewed.expires_at,
+            ttl_ms: renewed.ttl_ms
+        }
+
+        {:reply, :ok, %{state | leases: Map.put(state.leases, cell_key, lease)}}
+
+      _ ->
+        {:reply, {:error, :stale}, state}
+    end
+  end
+
+  def handle_call({:released, cell_key, etag}, _from, state) do
+    case state.leases[cell_key] do
+      %{etag: ^etag} -> {:reply, :ok, %{state | leases: Map.delete(state.leases, cell_key)}}
+      _ -> {:reply, :ok, state}
+    end
+  end
+
+  def handle_call(:leases, _from, state), do: {:reply, state.leases, state}
 
   def handle_call({:claim_txid, cell_key}, _from, state) do
     cond do

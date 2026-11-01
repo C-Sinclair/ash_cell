@@ -483,6 +483,9 @@ defmodule AshCell do
 
   Returns `{:ok, lease}`, or `{:error, {:held_by, owner}}` while another node's
   lease is live. `opts` are passed to `AshCell.Lease.claim/4`.
+
+  `AshCell.LeaseRenewer` renews the lease while the cell is open, and fences the cell
+  if a renewal finds another owner.
   """
   @spec claim(term(), keyword()) :: {:ok, %AshCell.Lease{}} | {:error, term()}
   def claim(tenant, opts \\ []) do
