@@ -92,10 +92,13 @@ defmodule AshCell.Lease do
   if someone else does and their lease has not expired. The lease's `renewed?` is
   true when this owner already held it, and false when it was taken from nobody or
   from an expired owner.
+
+  Options: `:ttl_ms`, and `:clock`, a zero-arity function returning this node's wall
+  clock in milliseconds, for tests that skew it.
   """
   def claim(store, cell_key, owner, opts \\ []) do
     ttl = Keyword.get(opts, :ttl_ms, @default_ttl_ms)
-    now = System.system_time(:millisecond)
+    now = now(opts)
 
     store
     |> AshCell.ObjectStore.get(key(cell_key))
@@ -170,7 +173,7 @@ defmodule AshCell.Lease do
   @doc "Extends a lease this owner already holds. Fails if it was taken."
   def renew(store, %__MODULE__{} = lease, opts \\ []) do
     ttl = Keyword.get(opts, :ttl_ms, @default_ttl_ms)
-    expires = System.system_time(:millisecond) + ttl
+    expires = now(opts) + ttl
 
     store
     |> write(lease.cell_key, lease.owner, expires, lease.generation, lease.txid,
@@ -178,6 +181,9 @@ defmodule AshCell.Lease do
     )
     |> with_ttl(ttl)
   end
+
+  # `:clock` stands in for this node's wall clock, so a test can skew it.
+  defp now(opts), do: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end).()
 
   defp with_ttl({:ok, lease}, ttl), do: {:ok, %{lease | ttl_ms: ttl}}
   defp with_ttl(other, _ttl), do: other
@@ -207,14 +213,14 @@ defmodule AshCell.Lease do
   end
 
   @doc "Who holds this lease right now, if anyone."
-  def holder(store, cell_key) do
+  def holder(store, cell_key, opts \\ []) do
     case AshCell.ObjectStore.get(store, key(cell_key)) do
       {:ok, body, _etag} ->
         held = Jason.decode!(body)
 
         cond do
           is_nil(held["owner"]) -> {:ok, nil}
-          held["expires_at"] > System.system_time(:millisecond) -> {:ok, held["owner"]}
+          held["expires_at"] > now(opts) -> {:ok, held["owner"]}
           true -> {:ok, :expired}
         end
 
