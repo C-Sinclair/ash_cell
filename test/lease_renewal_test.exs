@@ -69,7 +69,7 @@ defmodule AshCell.LeaseRenewalTest do
     taken =
       Jason.encode!(%{
         owner: "node-b",
-        expires_at: System.system_time(:millisecond) + 60_000,
+        ttl_ms: 60_000,
         generation: 99,
         txid: 0
       })

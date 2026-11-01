@@ -91,16 +91,11 @@ defmodule AshCell.LeaseRenewer do
   # the lease without coming through here.
   defp tracked(%Ownership{lease: %{etag: etag}} = ownership, %{etag: etag}), do: ownership
 
-  defp tracked(_ownership, lease) do
-    ttl_ms = lease.ttl_ms || Lease.default_ttl_ms()
-    # This node wrote `expires_at`, so its own wall clock measures what is left.
-    remaining = max(lease.expires_at - System.system_time(:millisecond), 0)
-
-    %{
-      Ownership.held(lease, ttl_ms)
-      | expires_at_monotonic: System.monotonic_time(:millisecond) + remaining
-    }
-  end
+  # Counted from when this node first sees the etag, on its own monotonic clock. The
+  # write landed a tick or a claim earlier at most, well inside the third of the TTL
+  # that renewal leaves spare.
+  defp tracked(_ownership, lease),
+    do: Ownership.held(lease, lease.ttl_ms || Lease.default_ttl_ms())
 
   defp renew(cell_key, ownership) do
     # The manager's lease rather than the tracked one, so the txid written back is

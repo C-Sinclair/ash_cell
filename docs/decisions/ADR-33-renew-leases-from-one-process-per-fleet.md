@@ -1,6 +1,7 @@
 # ADR-33 — Renew leases from one process per fleet, and release through it
 
 **Status:** accepted
+**Last changed:** 2026-11-01 — expiry is now measured on the store's clock (ADR-35); the renewer counts from when it first sees an etag
 **Date:** 2026-11-01
 **Deciders:** Conor Sinclair
 **Relates to:** `AshCell.LeaseRenewer`, `AshCell.Manager`, `AshCell.Drain`, [ADR-08](ADR-08-fence-by-shared-txid.md), [ADR-10](ADR-10-fail-closed-on-a-refused-shipment.md), [ADR-14](ADR-14-bounded-read-staleness.md), [ADR-32](ADR-32-release-a-lease-by-conditional-write.md)
@@ -31,13 +32,13 @@ The manager already serialises lease bookkeeping. A PUT inside it would block ev
 
 Option B. It avoids the deadlock in A and the blocking in C, and puts release and renewal in one queue.
 
-The renewer computes each lease's remaining time from `expires_at` against this node's wall clock, because this node wrote that value. It then counts down on the monotonic clock. A renewal writes the manager's current txid into the lease body. `AshCell.Lease.claim/4` no longer reads that field, so it is only there for an operator reading the bucket.
+The renewer counts each lease's TTL down on the monotonic clock from when it first sees the lease's etag, which is at most a tick after the write. No wall clock is involved. A renewal writes the manager's current txid into the lease body. `AshCell.Lease.claim/4` no longer reads that field, so it is only there for an operator reading the bucket.
 
 ## Consequences
 
 - **What it rules out.** A lease that silently lapses while its node serves the cell, as long as the store answers.
 - **What it makes worse.** One PUT per held lease every two thirds of a TTL. At the default 30s TTL and 256 resident cells that is about 13 PUTs a second per node, which is an estimate and was not measured.
-- **What stays open.** A renewer that cannot reach the store logs and retries each tick, and the lease expires on schedule. Nothing then stops the node serving reads, unless the application checks `AshCell.Ownership`. Clock skew between nodes still decides when another node treats the lease as expired; `docs/spec.md` §8 records that as an open question.
+- **What stays open.** A renewer that cannot reach the store logs and retries each tick, and the lease expires on schedule. Nothing then stops the node serving reads, unless the application checks `AshCell.Ownership`. Another node measures expiry on the store's clock ([ADR-35](ADR-35-measure-lease-expiry-on-the-store-clock.md)), so skew between nodes does not decide it.
 - **What now depends on it.** `AshCell.Drain.drain_cell/3` requires the renewer to be running to release a lease.
 
 ## Evidence

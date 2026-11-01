@@ -50,7 +50,8 @@ defmodule AshCell.FencingTest do
       cell = unique_cell("gen_expiry")
 
       {:ok, first} = Lease.claim(store, cell, "node-a", ttl_ms: 1)
-      Process.sleep(5)
+      # Past the TTL on the store's clock, which counts whole seconds.
+      Process.sleep(2_100)
       {:ok, second} = Lease.claim(store, cell, "node-b", ttl_ms: 60_000)
 
       assert second.generation > first.generation
@@ -94,7 +95,8 @@ defmodule AshCell.FencingTest do
       {:ok, _} = ship(store, cell, 1)
       {:ok, _} = ship(store, cell, 2)
 
-      Process.sleep(5)
+      # Past the TTL on the store's clock, which counts whole seconds.
+      Process.sleep(2_100)
       {:ok, second} = Lease.claim(store, cell, "node-b", ttl_ms: 60_000)
 
       assert second.txid == 2
@@ -137,7 +139,8 @@ defmodule AshCell.FencingTest do
       a_local_txid = a.txid + 1
 
       # node-b takes over, learns the mark, and ships.
-      Process.sleep(5)
+      # Past the TTL on the store's clock, which counts whole seconds.
+      Process.sleep(2_100)
       {:ok, b} = Lease.claim(store, cell, "node-b", ttl_ms: 60_000)
       assert b.txid == 1
       assert {:ok, _} = ship(store, cell, b.txid + 1)
@@ -153,7 +156,8 @@ defmodule AshCell.FencingTest do
       cell = unique_cell("fenced_cold")
 
       {:ok, a} = Lease.claim(store, cell, "node-a", ttl_ms: 1)
-      Process.sleep(5)
+      # Past the TTL on the store's clock, which counts whole seconds.
+      Process.sleep(2_100)
       {:ok, b} = Lease.claim(store, cell, "node-b", ttl_ms: 60_000)
       assert {:ok, _} = ship(store, cell, b.txid + 1)
 
@@ -168,7 +172,8 @@ defmodule AshCell.FencingTest do
       cell = unique_cell("why_not_generation")
 
       {:ok, a} = Lease.claim(store, cell, "node-a", ttl_ms: 1)
-      Process.sleep(5)
+      # Past the TTL on the store's clock, which counts whole seconds.
+      Process.sleep(2_100)
       {:ok, b} = Lease.claim(store, cell, "node-b", ttl_ms: 60_000)
 
       refute a.generation == b.generation

@@ -151,11 +151,14 @@ defmodule AshCell.DrainHandoffTest do
   describe "a displaced node" do
     test "leaves its successor's lease in place and stops serving the cell",
          %{store: store, tenant: tenant} do
-      {:ok, lease} = Lease.claim(store, tenant, "node-a", ttl_ms: 1)
+      {:ok, lease} = Lease.claim(store, tenant, "node-a", ttl_ms: 60_000)
       AshCell.Manager.put_lease(tenant, lease)
       write(tenant, "Row")
-      Process.sleep(5)
-      {:ok, _} = Lease.claim(store, tenant, "node-b", ttl_ms: 60_000)
+
+      # node-b's lease over node-a's, as a claim after an expiry would write it.
+      # This fleet's renewer would keep a short TTL from ever expiring.
+      taken = Jason.encode!(%{owner: "node-b", ttl_ms: 60_000, generation: 99, txid: 0})
+      {:ok, _} = AshCell.ObjectStore.put(store, Lease.key(tenant), taken, if_match: lease.etag)
 
       assert {:error, :lease_taken} = AshCell.Drain.drain_cell(tenant, store, 500)
       assert {:ok, "node-b"} = Lease.holder(store, tenant)

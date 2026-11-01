@@ -34,9 +34,16 @@ defmodule AshCell.Lease do
   a correctness concern here.
 
   It does cost the displaced owner's commits since its last shipment, which were
-  acknowledged locally and are refused at the next one. A writer whose clock lags
-  its readers by more than the renewal margin pays that on every request another
-  node serves; `docs/spec.md` section 8 records it as an open question.
+  acknowledged locally and are refused at the next one.
+
+  ## Expiry is measured on the store's clock
+
+  A lease stores its TTL, not an expiry time. It expires at the `Last-Modified` the
+  store set on `lease.json` plus that TTL, and a reader compares that with the
+  `Date` on its own GET response, so no node's clock decides it (ADR-35). Both
+  headers count whole seconds, so a lease can stay live up to two seconds past its
+  TTL, and is never read as expired early. A lease written before `ttl_ms` was
+  stored is read from its `expires_at`, by the reader's clock.
 
   This paragraph was false for as long as durability was keyed by generation, and
   it is worth saying why rather than quietly fixing it. Successive owners never
@@ -101,13 +108,13 @@ defmodule AshCell.Lease do
     now = now(opts)
 
     store
-    |> AshCell.ObjectStore.get(key(cell_key))
+    |> AshCell.ObjectStore.get_object(key(cell_key))
     |> case do
       {:error, :not_found} ->
         # Nobody holds it. If-None-Match means only one racer can create it.
-        take(store, cell_key, owner, now + ttl, if_none_match: true)
+        take(store, cell_key, owner, now + ttl, if_none_match: true, ttl_ms: ttl)
 
-      {:ok, body, etag} ->
+      {:ok, %{body: body, etag: etag} = object} ->
         held = Jason.decode!(body)
 
         cond do
@@ -120,23 +127,27 @@ defmodule AshCell.Lease do
             with {:ok, txid} <- AshCell.Replicator.latest_txid(store, cell_key),
                  {:ok, lease} <-
                    write(store, cell_key, owner, now + ttl, held["generation"], txid,
-                     if_match: etag
+                     if_match: etag,
+                     ttl_ms: ttl
                    ) do
               {:ok, %{lease | renewed?: true}}
             end
 
-          held["expires_at"] > now ->
+          # Released (ADR-32). Taken with If-Match, as an expired lease is.
+          is_nil(held["owner"]) ->
+            take(store, cell_key, owner, now + ttl, if_match: etag, ttl_ms: ttl)
+
+          live?(held, object, now) ->
             {:error, {:held_by, held["owner"]}}
 
           true ->
             # Expired. If-Match means only one racer can take it over.
-            take(store, cell_key, owner, now + ttl, if_match: etag)
+            take(store, cell_key, owner, now + ttl, if_match: etag, ttl_ms: ttl)
         end
 
       {:error, reason} ->
         {:error, reason}
     end
-    |> with_ttl(ttl)
   end
 
   # Taking a cell from somebody else -- or from nobody -- means allocating a fresh
@@ -177,16 +188,27 @@ defmodule AshCell.Lease do
 
     store
     |> write(lease.cell_key, lease.owner, expires, lease.generation, lease.txid,
-      if_match: lease.etag
+      if_match: lease.etag,
+      ttl_ms: ttl
     )
-    |> with_ttl(ttl)
   end
+
+  # Measured on the store's clock: the lease's Last-Modified plus its TTL, against
+  # the Date on this read's own response (ADR-35). Both are whole seconds, so the
+  # lease stays live a second longer rather than expiring early. A lease written
+  # before `ttl_ms` was stored carries only the writer's `expires_at`, which is
+  # compared with this node's clock as it was then.
+  defp live?(%{"ttl_ms" => ttl}, %{last_modified: modified, date: date}, _now)
+       when is_integer(ttl) and is_integer(modified) and is_integer(date),
+       do: date < modified + ttl + 1_000
+
+  defp live?(%{"ttl_ms" => ttl}, _object, _now) when is_integer(ttl),
+    do: raise(ArgumentError, "the object store sent no Last-Modified or Date header")
+
+  defp live?(held, _object, now), do: held["expires_at"] > now
 
   # `:clock` stands in for this node's wall clock, so a test can skew it.
   defp now(opts), do: Keyword.get(opts, :clock, fn -> System.system_time(:millisecond) end).()
-
-  defp with_ttl({:ok, lease}, ttl), do: {:ok, %{lease | ttl_ms: ttl}}
-  defp with_ttl(other, _ttl), do: other
 
   @doc """
   Releases a lease so another node can take it without waiting for expiry.
@@ -201,6 +223,7 @@ defmodule AshCell.Lease do
     body =
       Jason.encode!(%{
         owner: nil,
+        ttl_ms: 0,
         expires_at: 0,
         generation: lease.generation,
         txid: lease.txid
@@ -214,13 +237,13 @@ defmodule AshCell.Lease do
 
   @doc "Who holds this lease right now, if anyone."
   def holder(store, cell_key, opts \\ []) do
-    case AshCell.ObjectStore.get(store, key(cell_key)) do
-      {:ok, body, _etag} ->
+    case AshCell.ObjectStore.get_object(store, key(cell_key)) do
+      {:ok, %{body: body} = object} ->
         held = Jason.decode!(body)
 
         cond do
           is_nil(held["owner"]) -> {:ok, nil}
-          held["expires_at"] > now(opts) -> {:ok, held["owner"]}
+          live?(held, object, now(opts)) -> {:ok, held["owner"]}
           true -> {:ok, :expired}
         end
 
@@ -232,9 +255,19 @@ defmodule AshCell.Lease do
     end
   end
 
+  # `expires_at` is the writer's clock, and is written only for readers from before
+  # `ttl_ms` was stored. This version reads `ttl_ms`.
   defp write(store, cell_key, owner, expires_at, generation, txid, opts) do
+    ttl = Keyword.fetch!(opts, :ttl_ms)
+
     body =
-      Jason.encode!(%{owner: owner, expires_at: expires_at, generation: generation, txid: txid})
+      Jason.encode!(%{
+        owner: owner,
+        ttl_ms: ttl,
+        expires_at: expires_at,
+        generation: generation,
+        txid: txid
+      })
 
     case AshCell.ObjectStore.put(store, key(cell_key), body, opts) do
       {:ok, etag} ->
@@ -245,7 +278,8 @@ defmodule AshCell.Lease do
            etag: etag,
            expires_at: expires_at,
            generation: generation,
-           txid: txid
+           txid: txid,
+           ttl_ms: ttl
          }}
 
       {:error, :precondition_failed} ->

@@ -92,7 +92,8 @@ defmodule AshCell.ObjectStoreTest do
       tenant: tenant
     } do
       {:ok, first} = Lease.claim(store, tenant, "node-a", ttl_ms: 1)
-      Process.sleep(20)
+      # Past the TTL on the store's clock, which counts whole seconds.
+      Process.sleep(2_100)
 
       assert {:ok, second} = Lease.claim(store, tenant, "node-b")
       assert second.owner == "node-b"
@@ -103,7 +104,8 @@ defmodule AshCell.ObjectStoreTest do
 
     test "the previous owner cannot renew after being displaced", %{store: store, tenant: tenant} do
       {:ok, first} = Lease.claim(store, tenant, "node-a", ttl_ms: 1)
-      Process.sleep(20)
+      # Past the TTL on the store's clock, which counts whole seconds.
+      Process.sleep(2_100)
       {:ok, _second} = Lease.claim(store, tenant, "node-b")
 
       assert {:error, {:held_by, "node-b"}} = Lease.renew(store, first)

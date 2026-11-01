@@ -62,11 +62,38 @@ defmodule AshCell.ObjectStore do
   end
 
   def get(store, key) do
+    with {:ok, object} <- get_object(store, key) do
+      {:ok, object.body, object.etag}
+    end
+  end
+
+  @doc """
+  Reads `key` with the store's timestamps, from the same GET as `get/2`.
+
+  Returns `{:ok, %{body:, etag:, last_modified:, date:}}`. `last_modified` is when
+  the store accepted the object's current version and `date` is when it answered,
+  both on the store's clock in Unix milliseconds, to the second, or `nil` when the
+  store sent no such header.
+  """
+  def get_object(store, key) do
     case request(store, :get, key) do
-      {:ok, %{status: 200} = resp} -> {:ok, resp.body, etag(resp)}
-      {:ok, %{status: 404}} -> {:error, :not_found}
-      {:ok, %{status: status}} -> {:error, {:unexpected_status, status}}
-      {:error, reason} -> {:error, reason}
+      {:ok, %{status: 200} = resp} ->
+        {:ok,
+         %{
+           body: resp.body,
+           etag: etag(resp),
+           last_modified: http_date(resp, "last-modified"),
+           date: http_date(resp, "date")
+         }}
+
+      {:ok, %{status: 404}} ->
+        {:error, :not_found}
+
+      {:ok, %{status: status}} ->
+        {:error, {:unexpected_status, status}}
+
+      {:error, reason} ->
+        {:error, reason}
     end
   end
 
@@ -216,6 +243,25 @@ defmodule AshCell.ObjectStore do
 
   defp maybe_header(headers, _name, nil), do: headers
   defp maybe_header(headers, name, value), do: [{name, value} | headers]
+
+  @months ~w(Jan Feb Mar Apr May Jun Jul Aug Sep Oct Nov Dec)
+
+  # RFC 9110's IMF-fixdate, which is the form S3 and MinIO send:
+  # "Sun, 01 Nov 2026 22:02:43 GMT".
+  defp http_date(resp, header) do
+    with [value | _] <- Req.Response.get_header(resp, header),
+         [_, day, month, year, time] <-
+           Regex.run(~r/^\w{3}, (\d{2}) (\w{3}) (\d{4}) (\d{2}:\d{2}:\d{2}) GMT$/, value),
+         month when is_integer(month) <- Enum.find_index(@months, &(&1 == month)),
+         {:ok, datetime, 0} <-
+           DateTime.from_iso8601(
+             "#{year}-#{String.pad_leading(Integer.to_string(month + 1), 2, "0")}-#{day}T#{time}Z"
+           ) do
+      DateTime.to_unix(datetime, :millisecond)
+    else
+      _ -> nil
+    end
+  end
 
   defp etag(resp) do
     resp

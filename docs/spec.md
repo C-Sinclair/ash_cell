@@ -339,13 +339,9 @@ directly. The architecture is proven; the Elixir/Ash expression of it is not.
    contribution available here and would benefit far more people than AshCell.
 2. Does the demo need a second node before it is convincing, or does single-node with a
    simulated cold start carry the argument?
-3. How should a lease survive a writer whose clock lags its readers? `AshCell.Lease` writes
-   `expires_at` from the writer's wall clock, and `claim/4` and `holder/2` compare it with the
-   reader's. A writer lagging by more than the renewal margin (a third of the TTL) writes
-   leases that are already expired on arrival, so `AshCell.LeaseRenewer` renewing on time
-   gives no exclusion. The txid fence still refuses the displaced writer's snapshot, but its
-   acknowledged, unshipped writes are lost each time a client asks another node. DataLite
-   measured this on an Android emulator whose BEAM lagged the device clock by 270s after the
-   host slept. One candidate is to store the TTL and have a reader treat a lease as expired
-   only after seeing the same etag unchanged for `ttl_ms` of its own monotonic time. Not
-   decided, and `expires_at` is unchanged.
+3. ~~How should a lease survive a writer whose clock lags its readers?~~ Answered by
+   [ADR-35](decisions/ADR-35-measure-lease-expiry-on-the-store-clock.md): a lease stores its
+   TTL, and expires at the store's `Last-Modified` for `lease.json` plus that TTL, compared
+   with the `Date` on the reader's own response. What stays open is whether every
+   S3-compatible store sets `Last-Modified` on a conditional PUT. MinIO does; others were not
+   checked.

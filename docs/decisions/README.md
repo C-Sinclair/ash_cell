@@ -49,6 +49,7 @@ live in [`../design/`](../design), and reference these.
 | [32](ADR-32-release-a-lease-by-conditional-write.md) | Release a lease by a conditional PUT of an ownerless lease, because MinIO ignores `If-Match` on DELETE | accepted |
 | [33](ADR-33-renew-leases-from-one-process-per-fleet.md) | Renew leases from one process per fleet, and release through it | accepted |
 | [34](ADR-34-open-a-restored-cell-read-only.md) | Open a restored cell read-only, and refuse its writes in the binder | accepted |
+| [35](ADR-35-measure-lease-expiry-on-the-store-clock.md) | Measure lease expiry on the object store's clock, from `Last-Modified` plus the TTL against `Date` | corrects an earlier belief |
 
 ## Performance, encryption, integration
 
