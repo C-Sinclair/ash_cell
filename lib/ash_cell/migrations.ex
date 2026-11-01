@@ -35,12 +35,21 @@ defmodule AshCell.Migrations do
   A file that is already loaded is not compiled again. A fleet that restarts, or two
   fleets sharing a path, would otherwise redefine a module a running migration may
   be executing.
+
+  Raises `ArgumentError` when `path` is not a directory. Pass `nil` for no migrations.
   """
   @spec compile(Path.t() | nil) :: [migration()]
   def compile(nil), do: []
 
   # `Ecto.Migrator`'s naming rules: `<version>_<name>.exs`.
   def compile(path) do
+    # A wildcard over a missing directory is `[]`, which would open every cell with
+    # no schema and say nothing.
+    unless File.dir?(path) do
+      raise ArgumentError,
+            "migrations_path #{inspect(path)} is not a directory; pass nil for no migrations"
+    end
+
     [path, "**", "*.exs"]
     |> Path.join()
     |> Path.wildcard()

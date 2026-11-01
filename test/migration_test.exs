@@ -106,6 +106,27 @@ defmodule AshCell.MigrationTest do
   end
 
   describe "failing closed" do
+    test "a migrations_path that does not exist refuses to compile", %{dir: dir} do
+      # A wildcard over a missing directory is `[]`, so a typo or a deploy that
+      # dropped the directory started a fleet that opened every cell with no schema.
+      missing = Path.join(dir, "no_such_migrations")
+
+      assert_raise ArgumentError, ~r/no_such_migrations/, fn ->
+        AshCell.Migrations.compile(missing)
+      end
+    end
+
+    test "a fleet whose migrations_path does not exist does not start", %{dir: dir} do
+      missing = Path.join(dir, "no_such_migrations")
+
+      assert {:error, {{:shutdown, {:failed_to_start_child, AshCell.Manager, {error, _}}}, _}} =
+               start_supervised(
+                 {AshCell, repo: AshCell.TestRepo, dir: dir, migrations_path: missing}
+               )
+
+      assert %ArgumentError{} = error
+    end
+
     test "a cell whose migration fails does not start", %{dir: dir} do
       start_fleet(dir, :failing)
 

@@ -296,7 +296,8 @@ defmodule AshCell.Manager do
   @doc """
   Recompiles the fleet's migration list from `migrations_path`.
 
-  Returns `{:ok, version}`, the highest version in the list, or 0 for none. Every
+  Returns `{:ok, version}`, the highest version in the list, or 0 for none, and
+  `{:error, %ArgumentError{}}` if `migrations_path` is no longer a directory. Every
   cell activated after this returns opens with the new list; resident cells are
   untouched until `upgrade/1` or their next open.
   """
@@ -545,6 +546,10 @@ defmodule AshCell.Manager do
     migrations = AshCell.Migrations.compile(state.migrations_path)
     target = migrations |> Enum.map(&elem(&1, 0)) |> Enum.max(fn -> 0 end)
     {:reply, {:ok, target}, %{state | migrations: migrations}}
+  rescue
+    # Raised for a directory removed since the fleet started. The manager holds every
+    # lease on this node, so the caller fails rather than the manager.
+    e in ArgumentError -> {:reply, {:error, e}, state}
   end
 
   def handle_call(:migrations, _from, state), do: {:reply, state.migrations, state}
