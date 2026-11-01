@@ -7,8 +7,8 @@ defmodule AshCell.Lease do
   no quorum, and no need for the nodes to know that the other exists.
 
   Two other objects sit beside it. The **generation counter** outlives the lease,
-  because `release/2` deletes the lease and a counter derived from the lease body
-  restarted at 1 on every clean handoff — handing two successive owners the same
+  because a lease can be deleted (`release/2` used to, and `AshCell.Branch` still
+  does) and a counter derived from the lease body restarted at 1 on every clean handoff — handing two successive owners the same
   generation. A generation that repeats is a fence that does not fence. The
   **txid** a claim records is the durability high-water mark, read once here so
   that nothing on the write path has to read it again; see `AshCell.Replicator`
@@ -59,8 +59,8 @@ defmodule AshCell.Lease do
   @doc """
   Where a cell's generation counter lives.
 
-  Separate from the lease, and never deleted, because `release/2` deletes the
-  lease. Deriving the next generation from the lease body meant a clean handoff
+  Separate from the lease, and never deleted, because a lease can be deleted.
+  Deriving the next generation from the lease body meant a clean handoff
   found no lease, started again at 1, and handed two successive owners the same
   generation -- a generation that repeats is a fence that does not fence.
   """
@@ -89,9 +89,14 @@ defmodule AshCell.Lease do
 
         cond do
           held["owner"] == owner ->
-            # A renewal keeps its generation and its place in the log.
-            with {:ok, lease} <-
-                   write(store, cell_key, owner, now + ttl, held["generation"], held["txid"] || 0,
+            # A renewal keeps its generation. Its txid comes from the store, because
+            # shipping never rewrites the lease body: the body's txid is the one from
+            # the original claim, and adopting it reuses txids this owner already
+            # wrote. Reading the mark here does not undo the fence (ADR-08), since the
+            # If-Match below fails if anybody else has held the lease since.
+            with {:ok, txid} <- AshCell.Replicator.latest_txid(store, cell_key),
+                 {:ok, lease} <-
+                   write(store, cell_key, owner, now + ttl, held["generation"], txid,
                      if_match: etag
                    ) do
               {:ok, %{lease | renewed?: true}}
@@ -151,9 +156,28 @@ defmodule AshCell.Lease do
     )
   end
 
-  @doc "Releases a lease so another node can take it without waiting for expiry."
+  @doc """
+  Releases a lease so another node can take it without waiting for expiry.
+
+  Returns `{:error, :precondition_failed}` when the lease has changed since
+  `lease` was read, which means another owner holds it and it was left alone.
+  """
   def release(store, %__MODULE__{} = lease) do
-    AshCell.ObjectStore.delete(store, key(lease.cell_key))
+    # A conditional PUT of an expired lease with no owner, not a DELETE: MinIO
+    # ignores If-Match on DELETE (ADR-32), and an unconditional delete let a
+    # displaced owner remove its successor's lease.
+    body =
+      Jason.encode!(%{
+        owner: nil,
+        expires_at: 0,
+        generation: lease.generation,
+        txid: lease.txid
+      })
+
+    case AshCell.ObjectStore.put(store, key(lease.cell_key), body, if_match: lease.etag) do
+      {:ok, _etag} -> :ok
+      other -> other
+    end
   end
 
   @doc "Who holds this lease right now, if anyone."
@@ -162,10 +186,10 @@ defmodule AshCell.Lease do
       {:ok, body, _etag} ->
         held = Jason.decode!(body)
 
-        if held["expires_at"] > System.system_time(:millisecond) do
-          {:ok, held["owner"]}
-        else
-          {:ok, :expired}
+        cond do
+          is_nil(held["owner"]) -> {:ok, nil}
+          held["expires_at"] > System.system_time(:millisecond) -> {:ok, held["owner"]}
+          true -> {:ok, :expired}
         end
 
       {:error, :not_found} ->

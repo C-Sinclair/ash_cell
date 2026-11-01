@@ -27,7 +27,7 @@ the successor snapshots — nothing is refused anywhere. This was measured, not 
 fenced write's PUT returned `{:ok, etag}`.
 
 A second bug compounded the first: the generation counter was derived from the lease body, and
-`Lease.release/2` deletes the lease, so a clean handoff restarted the generation at 1, handing two
+`Lease.release/2` deleted the lease at the time, so a clean handoff restarted the generation at 1, handing two
 successive owners the same number. Measured: **1 → 1** across a clean handoff, before the fix.
 After giving the generation counter its own object: **1 → 2**.
 

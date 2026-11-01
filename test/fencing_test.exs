@@ -6,7 +6,7 @@ defmodule AshCell.FencingTest do
   now guard, and a probe measured both against a real bucket before the fix:
 
     * generation reset to 1 across a clean handoff, because `Lease.release/2`
-      deletes the lease and the next claim found nothing to count from. Two
+      deleted the lease and the next claim found nothing to count from. Two
       successive owners at generation 1 is a fence that does not fence.
     * durability writes keyed by generation never collided, because a successor
       always takes a *new* generation and therefore writes a key its predecessor
